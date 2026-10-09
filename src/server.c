@@ -1,3 +1,5 @@
+#include "handler_podcast.h"
+#include "podcast.h"
 
 
 #include <errno.h>     // for error_t
@@ -72,6 +74,15 @@
 #include "toniebox_state_type.h"  // for toniebox_state_box_t, toniebox_sta...
 #include "toniesJson.h"           // for tonieboxes_update, tonies_deinit
 
+#if PODCAST_SUPPORT
+#include <signal.h>
+static volatile sig_atomic_t server_stop_requested;
+static void podcast_stop_signal(int signal_number) {
+    (void)signal_number;
+    server_stop_requested = 1;
+}
+#endif
+
 #define APP_HTTP_MAX_CONNECTIONS 32
 HttpConnection httpConnections[APP_HTTP_MAX_CONNECTIONS];
 HttpConnection httpsWebConnections[APP_HTTP_MAX_CONNECTIONS];
@@ -129,6 +140,13 @@ request_type_t request_paths[] = {
     {REQ_POST, "/api/auth/users/delete", SERTY_WEB, &handleApiAuthUsersDelete},
     {REQ_POST, "/api/auth/users/updatePassword", SERTY_WEB, &handleApiAuthUsersPassword},
     {REQ_POST, "/api/auth/enabled", SERTY_WEB, &handleApiAuthEnabled},
+    {REQ_GET, "/api/podcasts/capabilities", SERTY_WEB, &handleApiPodcast},
+    {REQ_GET, "/api/podcasts/search", SERTY_WEB, &handleApiPodcast},
+    {REQ_POST, "/api/podcasts/preview", SERTY_WEB, &handleApiPodcast},
+    {REQ_POST, "/api/podcasts/subscriptions/save", SERTY_WEB, &handleApiPodcast},
+    {REQ_POST, "/api/podcasts/subscriptions/refresh", SERTY_WEB, &handleApiPodcast},
+    {REQ_POST, "/api/podcasts/subscriptions/detach", SERTY_WEB, &handleApiPodcast},
+    {REQ_GET, "/api/podcasts/subscriptions", SERTY_WEB, &handleApiPodcast},
     /* plugins API */
     {REQ_GET, "/api/plugins/get", SERTY_WEB, &handleApiPluginsGet},
     /* custom API */
@@ -977,6 +995,11 @@ void server_init(bool test)
         return;
     }
 
+    podcast_init();
+#if PODCAST_SUPPORT
+    signal(SIGTERM, podcast_stop_signal);
+    signal(SIGINT, podcast_stop_signal);
+#endif
     pcaplog_open();
 
     err = httpServerStart(&http_context);
@@ -1013,6 +1036,10 @@ void server_init(bool test)
     while (!settings_get_bool("internal.exit"))
     {
         osDelayTask(250);
+#if PODCAST_SUPPORT
+        if (server_stop_requested) break;
+#endif
+        podcast_tick();
         mqtt_server_task();
         settings_loop();
         systime_t now = osGetSystemTime();
@@ -1100,6 +1127,7 @@ void server_init(bool test)
             settings_set_bool("internal.exit", TRUE);
         }
     }
+    podcast_shutdown();
     mqtt_server_deinit();
     tonies_deinit();
     cache_deinit();

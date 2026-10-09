@@ -4,7 +4,7 @@ FROM alpine:latest AS buildenv
 
 ARG NO_SANITIZERS=1
 
-RUN apk --no-cache add gcc protobuf-c-dev build-base git zip curl nodejs npm
+RUN apk --no-cache add gcc protobuf-c-dev build-base pkgconf curl-dev libxml2-dev git zip curl nodejs npm
 
 COPY . /buildenv
 WORKDIR /buildenv
@@ -19,7 +19,7 @@ ARG TEDDYCLOUD_VERSION=unknown
 LABEL org.opencontainers.image.version=$TEDDYCLOUD_VERSION
 EXPOSE 80 443 8443
 
-RUN apk --no-cache add strace ffmpeg curl ca-certificates bash
+RUN apk --no-cache add libcurl libxml2 strace ffmpeg curl ca-certificates bash
 RUN update-ca-certificates
 
 RUN mkdir -p /teddycloud/certs \

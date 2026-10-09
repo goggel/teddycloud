@@ -1,0 +1,24 @@
+FROM node:26-bookworm-slim AS frontend
+WORKDIR /frontend
+COPY teddycloud_web/package.json teddycloud_web/package-lock.json ./
+RUN npm ci
+COPY teddycloud_web/ ./
+RUN npm test && npm run format:check && npm run check:translations && npm run build
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc build-essential git zip curl ca-certificates pkg-config libcurl4-openssl-dev \
+    libxml2-dev protobuf-c-compiler ffmpeg python3 python3-pytest openssl faketime \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /buildenv
+COPY . .
+# Tests remain runnable in the finished test image. Neither Node nor Python is
+# added to production runtime images.
+COPY --from=frontend /usr/local/ /usr/local/
+COPY --from=frontend /frontend/node_modules/ teddycloud_web/node_modules/
+COPY --from=frontend /frontend/dist/ contrib/data/www/web/
+RUN make build NO_SANITIZERS=1 -j4 && make test_podcast
+RUN make build PODCAST_SUPPORT=0 BIN_DIR=bin/podcast-disabled NO_SANITIZERS=1 -j4 \
+    && ! ldd bin/podcast-disabled/teddycloud | grep -E 'lib(curl|xml2)'
+RUN TC_SERVER_BIN=/buildenv/bin/podcast-disabled/teddycloud bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_podcast_disabled.py
+CMD ["make", "test_podcast"]

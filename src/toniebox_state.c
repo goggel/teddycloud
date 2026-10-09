@@ -1,3 +1,4 @@
+#include "podcast.h"
 #include "toniebox_state.h"
 #include "settings.h"
 #include "server_helpers.h"
@@ -28,6 +29,7 @@ void tbs_tag_placed(client_ctx_t *client_ctx, uint64_t uid, bool valid)
     if (valid)
     {
         setLastUid(client_ctx->state->tag.uid, client_ctx->settingsNoOverlay);
+        podcast_placed(client_ctx->settings, uid);
     }
 
     char cuid[16 + 1];
