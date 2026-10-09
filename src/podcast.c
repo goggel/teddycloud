@@ -1258,6 +1258,7 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
         num(o, "maxTrimSeconds", 21600);
         num(o, "maxEpisodeTrims", 50);
         boolean(o, "trimSupported", true);
+        boolean(o, "feedInspectionSupported", true);
         cJSON *types = cJSON_AddArrayToObject(o, "sourceTypes");
         cJSON_AddItemToArray(types, cJSON_CreateString("rss"));
         cJSON_AddItemToArray(types, cJSON_CreateString("ard_audiothek"));
@@ -1271,6 +1272,20 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
         return failure(status, 503, "Podcast service is unavailable; check registry and storage");
     if (!strcmp(action, "search"))
         return discovery(body, status);
+    if (!strcmp(action, "feed-info"))
+    {
+        const char *url = podcast_string(body, "feedUrl");
+        if (!podcast_url_valid(url))
+            return failure(status, 400, "Expected a public RSS feed URL");
+        podcast_response_t response;
+        char error[256];
+        if (!podcast_http_get_timed(url, PODCAST_FEED_LIMIT, NULL, &stopping, &response, error, sizeof(error), 5000))
+            return failure(status, 502, error);
+        cJSON *o = cJSON_CreateObject();
+        boolean(o, "videoOnly", podcast_feed_video_only(response.data, response.length, response.final_url));
+        podcast_response_free(&response);
+        return o;
+    }
     if (!strcmp(action, "preview"))
     {
         char error[256];

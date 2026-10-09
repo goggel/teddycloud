@@ -19,9 +19,41 @@ static cJSON *parse(const char *feed, unsigned n, bool oldest)
     return podcast_feed_parse(feed, strlen(feed), "https://example.org/feed", n, oldest, 2000000000, error,
                               sizeof(error));
 }
+static void expect_feed_error(const char *feed, const char *message)
+{
+    char error[256] = "";
+    cJSON *result = podcast_feed_parse(feed, feed ? strlen(feed) : 0, "https://example.org/feed", 1, false,
+                                      2000000000, error, sizeof(error));
+    assert(!result);
+    assert(strstr(error, message));
+}
+static void test_feed_media(void)
+{
+    const char *video = "<rss><channel><item><enclosure type='video/mpeg' url='/maus.mp4'/></item></channel></rss>";
+    assert(podcast_feed_video_only(video, strlen(video), "https://example.org/feed"));
+    const char *unknown_or_audio[] = {
+        "",
+        "<broken",
+        "<html/>",
+        "<rss><channel/></rss>",
+        "<!DOCTYPE rss><rss><channel><item><enclosure type='video/mp4' url='/a.mp4'/></item></channel></rss>",
+        "<rss><channel><item><enclosure type='video/mp4' url='file:///a.mp4'/></item></channel></rss>",
+        "<rss><channel><item><enclosure type='video/mp4'/></item></channel></rss>",
+        "<rss><channel><item><enclosure type='audio/mpeg' url='/a.mp3'/></item></channel></rss>",
+        "<rss><channel><item><enclosure type='video/mp4' url='/a.mp4'/></item>"
+        "<item><enclosure type='audio/mpeg' url='/a.mp3'/></item></channel></rss>",
+        "<rss><channel><item><enclosure type='video/mp4' url='/a.mp4'/>"
+        "<enclosure type='application/ogg' url='/a.ogg'/></item></channel></rss>",
+        NULL};
+    for (unsigned i = 0; unknown_or_audio[i]; i++)
+        assert(!podcast_feed_video_only(unknown_or_audio[i], strlen(unknown_or_audio[i]), "https://example.org/feed"));
+    assert(!podcast_feed_video_only(NULL, 0, "https://example.org/feed"));
+    assert(!podcast_feed_video_only(video, PODCAST_FEED_LIMIT + 1, "https://example.org/feed"));
+}
 int main(void)
 {
     assert(podcast_http_init());
+    test_feed_media();
     char identifier[64];
     assert(podcast_ard_identifier("https://ardaudiothek.de/sendung/show/23667030/?share=1", identifier));
     assert(!strcmp(identifier, "23667030"));
@@ -115,6 +147,37 @@ int main(void)
     assert(!parse("<rss><channel/></rss>", 1, false));
     assert(!parse("<broken", 1, false));
     assert(!parse(feed, 0, false));
+    expect_feed_error(NULL, "empty feed");
+    expect_feed_error("", "empty feed");
+    expect_feed_error("<broken", "valid XML");
+    expect_feed_error("<html><body>Podcast homepage</body></html>", "podcast webpage");
+    expect_feed_error("<feed xmlns='http://www.w3.org/2005/Atom'/>", "does not return an RSS feed");
+    expect_feed_error("<rss/>", "no channel");
+    expect_feed_error("<!DOCTYPE rss><rss><channel/></rss>", "DTD or entity");
+    expect_feed_error("<rss><channel><item><enclosure type='video/mp4' url='/video'/></item></channel></rss>",
+                      "video episodes but no playable audio episodes");
+    /* WDR's Sendung mit der Maus feed advertises MP4 files as video/mpeg. */
+    expect_feed_error("<rss version='2.0'><channel><title>Die Sendung mit der Maus</title><item>"
+                      "<enclosure type='video/mpeg' url='https://example.org/maus_AVC-270.mp4'/>"
+                      "</item></channel></rss>", "use an audio podcast feed");
+    expect_feed_error("<rss><channel><item><pubDate>Thu, 01 Jan 2099 09:00:00 +0000</pubDate>"
+                      "<enclosure type='audio/mpeg' url='/future.mp3'/></item></channel></rss>",
+                      "no published episodes");
+    const char *repeated_item = "<item><enclosure type='audio/mpeg' url='/same.mp3'/></item>";
+    char *large_feed = calloc(1, 1001 * strlen(repeated_item) + 64);
+    assert(large_feed);
+    strcpy(large_feed, "<rss><channel>");
+    for (unsigned i = 0; i < 1000; i++)
+        strcat(large_feed, repeated_item);
+    size_t channel_end = strlen(large_feed);
+    strcpy(large_feed + channel_end, "</channel></rss>");
+    p = parse(large_feed, 1, false);
+    assert(p);
+    cJSON_Delete(p);
+    strcpy(large_feed + channel_end, repeated_item);
+    strcat(large_feed, "</channel></rss>");
+    expect_feed_error(large_feed, "1,000 episode limit");
+    free(large_feed);
     char unicode_feed[1024];
     char title[516];
     memset(title, 'a', 511);
@@ -128,6 +191,7 @@ int main(void)
     char oversized_error[256];
     assert(!podcast_feed_parse(feed, PODCAST_FEED_LIMIT + 1, "https://example.org/feed", 1, false, 2000000000,
                                oversized_error, sizeof(oversized_error)));
+    assert(strstr(oversized_error, "5 MiB size limit"));
     cJSON *config = cJSON_Parse("{\"feedUrl\":\"https://example.org/"
                                 "rss\",\"episodeCount\":5,\"order\":\"newest_first\",\"intervalHours\":6,\"enabled\":"
                                 "true,\"refreshOnPlacement\":false}");

@@ -99,6 +99,17 @@ always retained. Detached directories remain for explicit manual cleanup.
 
 Supported: public RSS 2.0 feeds with audio enclosures; MP3, M4A/MP4 audio, Ogg/Opus,
 FLAC, WAV and AAC. No Atom, private/paid feeds, credentials, Spotify or DRM.
+Video podcasts are not supported. Search results appear immediately; the editor
+checks RSS enclosure types asynchronously and hides confirmed video-only feeds
+from Apple's directory. If such a feed is already selected, the editor clears
+the draft feed URL and preview and shows a notice; saved subscriptions are not
+changed until explicitly saved. Mixed audio/video feeds remain available.
+Checks download metadata only, run at most three search probes at once, have a
+five-second server timeout and cache successful classifications in the editor
+for ten minutes. Unavailable or unclassifiable feeds remain visible so a temporary
+lookup failure does not hide an audio podcast; preview still validates the feed.
+For example, WDR's "Die Sendung mit der Maus" feed contains video enclosures;
+use the separate "Die Maus zum Hören" audio podcast instead.
 Search uses Apple's podcast directory or ARD's public GraphQL API, with manual
 links available when search is unavailable. ARD supports public, published,
 downloadable episodes; livestreams, future/invalid dates and non-downloadable

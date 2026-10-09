@@ -92,9 +92,21 @@ class PodcastAPI(unittest.TestCase):
                 audio.writeframes(struct.pack('<hh', 1000 * i, -1000 * i) * 48000)
             mapping[f'https://podcasts.example.org/{i}.wav'] = str(path)
         provider = FIXTURES / 'search.json'
+        video_feed = 'https://podcasts.example.org/video.rss'
+        mixed_feed = 'https://podcasts.example.org/mixed.rss'
+        video_item = '<item><enclosure type="video/mpeg" url="https://podcasts.example.org/maus.mp4"/></item>'
+        audio_item = '<item><enclosure type="audio/mpeg" url="https://podcasts.example.org/audio.mp3"/></item>'
+        (FIXTURES / 'video.xml').write_text('<rss version="2.0"><channel>' + video_item + '</channel></rss>')
+        (FIXTURES / 'mixed.xml').write_text('<rss version="2.0"><channel>' + video_item + audio_item + '</channel></rss>')
+        mapping[video_feed] = str(FIXTURES / 'video.xml')
+        mapping[mixed_feed] = str(FIXTURES / 'mixed.xml')
         provider.write_text(json.dumps({'results': [
             {'collectionId': 42, 'collectionName': '<b>Example Show</b>', 'artistName': 'Author', 'feedUrl': FEED},
-            {'collectionId': 43, 'collectionName': 'Invalid', 'feedUrl': 'file:///etc/passwd'}]}))
+            {'collectionId': 43, 'collectionName': 'Invalid', 'feedUrl': 'file:///etc/passwd'},
+            {'collectionId': 44, 'collectionName': 'Video podcast', 'kind': 'podcast', 'feedUrl': video_feed},
+            {'collectionId': 45, 'collectionName': 'Mixed podcast', 'kind': 'podcast', 'feedUrl': mixed_feed},
+            {'collectionId': 46, 'collectionName': 'Temporarily unavailable',
+             'feedUrl': 'https://podcasts.example.org/unavailable.rss'}]}))
         mapping['https://itunes.apple.com/search?media=podcast&entity=podcast&limit=20&country=DE&term=Example%20Show'] = str(provider)
         install_ard(FIXTURES, mapping)
         Path(os.environ['TC_PODCAST_FIXTURES']).write_text(json.dumps(mapping))
@@ -228,7 +240,8 @@ class PodcastAPI(unittest.TestCase):
 
     def test_discovery_and_manual_feed_fallback(self):
         result = request('search', query='?q=Example%20Show&country=DE')['results']
-        self.assertEqual(len(result), 1)
+        # Discovery stays fast; the browser inspects feeds asynchronously.
+        self.assertEqual([entry['providerId'] for entry in result], [42, 44, 45, 46])
         self.assertEqual(result[0]['providerId'], 42)
         self.assertEqual(result[0]['feedUrl'], FEED)
         self.assertEqual(result[0]['title'], '<b>Example Show</b>')
@@ -238,6 +251,15 @@ class PodcastAPI(unittest.TestCase):
         request('search', query='?q=Example&country=D', status=400)
         request('search', query='?q=Unavailable&country=DE', status=502)
         self.assertEqual(len(request('preview', self.config('0000000000000001'))['episodes']), 3)
+
+    def test_feed_info(self):
+        self.assertTrue(request('capabilities')['feedInspectionSupported'])
+        self.assertEqual(request('feed-info', {'feedUrl': FEED}), {'videoOnly': False})
+        self.assertEqual(request('feed-info', {'feedUrl': 'https://podcasts.example.org/video.rss'}), {'videoOnly': True})
+        self.assertEqual(request('feed-info', {'feedUrl': 'https://podcasts.example.org/mixed.rss'}), {'videoOnly': False})
+        request('feed-info', {'feedUrl': 'https://podcasts.example.org/unavailable.rss'}, status=502)
+        request('feed-info', {'feedUrl': 'file:///etc/passwd'}, status=400)
+        request('feed-info', {}, status=400)
 
     def test_prepared_audio_refresh_failure_and_detach(self):
         config = self.config('0000000000000002')

@@ -102,28 +102,100 @@ static bool contains(const char *data, size_t length, const char *pattern)
             return true;
     return false;
 }
+static xmlDoc *read_feed(const char *xml, size_t length, const char *base, xmlNode **channel, const char **failure)
+{
+    xmlDoc *doc = NULL;
+    *channel = NULL;
+    *failure = "The podcast server returned an empty feed";
+    if (!xml || !length)
+        goto fail;
+    *failure = "The podcast feed exceeds the 5 MiB size limit";
+    if (length > PODCAST_FEED_LIMIT)
+        goto fail;
+    /* Do not enable RECOVER, HUGE, NOENT or DTDLOAD. Reject declarations before
+     * parsing as well as parsed DTDs: even internal entity expansion is unwanted. */
+    *failure = "The podcast feed contains a DTD or entity declaration, which is not supported";
+    if (contains(xml, length, "<!DOCTYPE") || contains(xml, length, "<!ENTITY"))
+        goto fail;
+    doc = xmlReadMemory(xml, (int)length, base, NULL, XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING);
+    *failure = "The podcast server did not return valid XML; check that the URL points to an RSS feed";
+    if (!doc)
+        goto fail;
+    *failure = "The podcast feed contains a DTD or entity declaration, which is not supported";
+    if (doc->intSubset || doc->extSubset)
+        goto fail;
+    xmlNode *rss = xmlDocGetRootElement(doc);
+    *failure = "The URL does not return an RSS feed; use the RSS feed URL instead of a podcast webpage";
+    if (!rss || xmlStrcmp(rss->name, BAD_CAST "rss"))
+        goto fail;
+    for (xmlNode *n = rss->children; n; n = n->next)
+        if (!xmlStrcmp(n->name, BAD_CAST "channel"))
+            *channel = n;
+    *failure = "The RSS feed has no channel element";
+    if (!*channel)
+        goto fail;
+    return doc;
+fail:
+    if (doc)
+        xmlFreeDoc(doc);
+    return NULL;
+}
+static bool audio_type(const xmlChar *type)
+{
+    return type && (!xmlStrncmp(type, BAD_CAST "audio/", 6) || !xmlStrcmp(type, BAD_CAST "application/ogg"));
+}
+bool podcast_feed_video_only(const char *xml, size_t length, const char *base)
+{
+    const char *failure;
+    xmlNode *channel;
+    xmlDoc *doc = read_feed(xml, length, base, &channel, &failure);
+    if (!doc)
+        return false;
+    bool audio = false, video = false;
+    unsigned seen = 0;
+    for (xmlNode *n = channel->children; n; n = n->next)
+    {
+        if (xmlStrcmp(n->name, BAD_CAST "item"))
+            continue;
+        if (++seen > 1000)
+        {
+            video = false;
+            break;
+        }
+        for (xmlNode *e = n->children; e; e = e->next)
+            if (!xmlStrcmp(e->name, BAD_CAST "enclosure"))
+            {
+                xmlChar *type = xmlGetProp(e, BAD_CAST "type"), *ref = xmlGetProp(e, BAD_CAST "url");
+                bool is_audio = audio_type(type), is_video = type && !xmlStrncmp(type, BAD_CAST "video/", 6);
+                xmlChar *absolute = ref && (is_audio || is_video) ? xmlBuildURI(ref, BAD_CAST base) : NULL;
+                if (absolute && podcast_url_valid((char *)absolute))
+                {
+                    audio |= is_audio;
+                    video |= is_video;
+                }
+                xmlFree(absolute);
+                xmlFree(type);
+                xmlFree(ref);
+            }
+    }
+    xmlFreeDoc(doc);
+    return video && !audio;
+}
 cJSON *podcast_feed_parse(const char *xml, size_t length, const char *base, unsigned count, bool oldest, time_t now,
                           char *err, size_t size)
 {
     cJSON *result = NULL;
     xmlDoc *doc = NULL;
-    if (!xml || length > PODCAST_FEED_LIMIT || !count || count > 50)
+    xmlNode *channel;
+    const char *failure = "Invalid episode count: select 1–50 episodes";
+    if (!count || count > 50)
         goto fail;
-    /* Do not enable RECOVER, HUGE, NOENT or DTDLOAD. Reject declarations before
-     * parsing as well as parsed DTDs: even internal entity expansion is unwanted. */
-    if (contains(xml, length, "<!DOCTYPE") || contains(xml, length, "<!ENTITY"))
-        goto fail;
-    doc = xmlReadMemory(xml, (int)length, base, NULL, XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING);
-    xmlNode *rss = doc ? xmlDocGetRootElement(doc) : NULL, *channel = NULL;
-    if (!rss || doc->intSubset || doc->extSubset || xmlStrcmp(rss->name, BAD_CAST "rss"))
-        goto fail;
-    for (xmlNode *n = rss->children; n; n = n->next)
-        if (!xmlStrcmp(n->name, BAD_CAST "channel"))
-            channel = n;
-    if (!channel)
+    doc = read_feed(xml, length, base, &channel, &failure);
+    if (!doc)
         goto fail;
     cJSON *items[1000];
     unsigned length_items = 0, seen = 0;
+    bool video_enclosures = false;
     for (xmlNode *n = channel->children; n; n = n->next)
     {
         if (xmlStrcmp(n->name, BAD_CAST "item"))
@@ -132,6 +204,7 @@ cJSON *podcast_feed_parse(const char *xml, size_t length, const char *base, unsi
         {
             for (unsigned i = 0; i < length_items; i++)
                 cJSON_Delete(items[i]);
+            failure = "The podcast feed exceeds the 1,000 episode limit";
             goto fail;
         }
         char *title = text(n, "title"), *guid = text(n, "guid"), *date = text(n, "pubDate"), *url = NULL;
@@ -140,8 +213,9 @@ cJSON *podcast_feed_parse(const char *xml, size_t length, const char *base, unsi
             if (!xmlStrcmp(e->name, BAD_CAST "enclosure"))
             {
                 xmlChar *type = xmlGetProp(e, BAD_CAST "type"), *ref = xmlGetProp(e, BAD_CAST "url");
-                if (type && ref &&
-                    (!xmlStrncmp(type, BAD_CAST "audio/", 6) || !xmlStrcmp(type, BAD_CAST "application/ogg")))
+                if (type && ref && !xmlStrncmp(type, BAD_CAST "video/", 6))
+                    video_enclosures = true;
+                if (ref && audio_type(type))
                 {
                     xmlChar *absolute = xmlBuildURI(ref, BAD_CAST base);
                     if (absolute && podcast_url_valid((char *)absolute))
@@ -179,6 +253,9 @@ cJSON *podcast_feed_parse(const char *xml, size_t length, const char *base, unsi
         free(date);
         free(url);
     }
+    failure = video_enclosures
+                  ? "This feed contains video episodes but no playable audio episodes; use an audio podcast feed"
+                  : "The RSS feed has no published episodes with supported public audio enclosures";
     if (!length_items)
         goto fail;
     qsort(items, length_items, sizeof(*items), compare);
@@ -204,8 +281,7 @@ cJSON *podcast_feed_parse(const char *xml, size_t length, const char *base, unsi
 fail:
     if (doc)
         xmlFreeDoc(doc);
-    snprintf(err, size,
-             "Expected RSS 2.0 with playable audio enclosures (no DTD/entities, at most 1,000 items and 5 MiB)");
+    snprintf(err, size, "%s", failure);
     return NULL;
 }
 #endif
