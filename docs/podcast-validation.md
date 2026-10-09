@@ -1,8 +1,9 @@
 # Prepared podcast implementation validation
 
 Validated locally on 2026-10-09 using Linux/arm64 containers in Podman on macOS.
-This records the original RSS feature. ARD providers and episode trimming remain
-additional planned work; they are not included in these images.
+The original RSS validation is retained below. ARD and trimming extension
+validation and new image provenance are recorded in the extension section at
+the end; the original image IDs do not include those extensions.
 
 ## Source and image provenance
 
@@ -93,3 +94,86 @@ Local logs are `/private/tmp/teddycloud-podcast-*.log`; notable logs are
 No images or branches have been pushed. See [podcasts](podcasts.md) for operation
 and the outstanding device matrix, and [download protocol](podcast-download-protocol.md)
 for the interrupted-download/416 recovery acceptance procedure.
+
+## ARD and trimming extension — 2026-10-09
+
+Implementation commits: backend `d374b7ba`, bounds/regression follow-up
+`f49e0a84`; frontend `8a30a31e43d1d71a4041c4c4cada676fc58fb918`.
+The private integration checkout merges these feature commits and bundles the
+matching UI; its release source is `8bcf81c621bad6284fc076bb67ad39ae5f6eade7`.
+Feature commits retain the original frontend gitlink and generated assets.
+
+Verified extension gates:
+
+- Frontend: 12 files / 119 tests, TypeScript/Vite build, formatting and six-locale
+  key checks. Six rendered editor tests use real Ant Design controls: provider
+  search/selection/cancellation, defaults and zero overrides, removal/inheritance,
+  inactive source-bound overrides, Save/Cancel, polling/revision preservation,
+  requested/applied cuts, read-only controls and legacy capability fallback.
+- Optimized C parser/URL/date/trim-window and production transport policy tests.
+- Thirteen native service scenarios: both ARD link forms and canonical identity,
+  asset identity across rotating URLs, pagination/exclusions/fallback identities,
+  malformed/oversized/aggregate response limits, repeated pages and provider
+  cache/rate isolation; 50 overrides and exact 65,536-byte requests, malformed
+  cuts/identities and source mismatch; migration, pins and publication recovery.
+- Generated 12-second intro/main/outro tones prove sample removal in decoded
+  Opus output, with measured durations and distinct chapters. Start/end/default
+  and explicit-zero overrides work. Trim-only updates change the audio ID;
+  inactive overrides alone do not. Full-episode cuts preserve previous audio,
+  hash and applied metadata. Test-only FFmpeg wrappers cover 1–3-byte PCM chunks,
+  large stderr, incomplete frames, second-pass failure, inconsistent counts,
+  cancellation and child reaping; no wrapper is installed in runtime images.
+- Existing 9 C utility tests and 21 content/box-simulator/TAF regressions pass
+  after the socket line-boundary fix needed for 64 KiB bodies. Both Linux and
+  Windows copies of that reader were corrected; Windows builds were not run.
+
+The public ARD GraphQL query shape was checked directly on 2026-10-09; automated
+regressions use minimal synthetic fixtures. No credentials or live episode audio
+are checked in. Time budgets are bounded by the implementation; simulated
+fixture responses do not model all live-network timeout behavior.
+
+All production variants pass root and PUID/PGID=1000 startup, matching served
+JS/translation checks, absence of Node/Python/fixture hooks, runtime curl/XML
+linkage, persisted trim settings/overrides and restart recovery. The exact
+integration Git/version release check passes. The compose file still defines
+only the existing `teddycloud` service and its standard volumes.
+
+| Extension image | Image ID | Source |
+| --- | --- | --- |
+| `localhost/teddycloud:podcast-extensions` (Ubuntu) | `21a730ba7571` | integration `8bcf81c6` |
+| `localhost/teddycloud:podcast-extensions-debian` | `325ed1c484db` | integration `8bcf81c6` |
+| `localhost/teddycloud:podcast-extensions-alpine` | `98d218b9b243` | integration `8bcf81c6` |
+| `localhost/teddycloud:podcast-extensions-tests-final` | `c95e01e93a75` | final implementation and test sources; test-only |
+
+The final test image layers the bounded-query follow-up and final tests onto the
+fully checked extension test image, reusing generated test certificates. Its
+frontend suite passes 119 tests; its optimized unit tests and 13 native scenarios
+pass. All 13 native service scenarios also pass as UID/GID 1000, including actual
+ARD fixture preparation and PCM trimming. The underlying extension test image also builds the feature-disabled
+executable, verifies absent curl/XML linkage, and checks disabled capabilities/API.
+Production images use `NO_SANITIZERS=1` and Linux/arm64.
+
+Logs are `/private/tmp/teddycloud-extension-*.log`: `web-tests`, `web-build`,
+`web-format`, `web-translations`, `limits-tests-2`, `regressions`,
+`release-final`, `*-final`, `runtime-ubuntu`, `runtime-debian`, `runtime-alpine`
+`final-test-image` and `nonroot`. To check another production image without repeating the
+same service suite, pass `--skip-service-tests` to the container test runner.
+
+Reproduce the test image from the feature checkout with its matching frontend,
+and production images from the clean private integration checkout:
+
+```sh
+podman build -f DockerfilePodcastTests -t localhost/teddycloud:podcast-extensions-tests-final .
+podman run --rm localhost/teddycloud:podcast-extensions-tests-final make test_podcast
+# In the clean integration checkout:
+make test_git_version
+podman build --build-arg NO_SANITIZERS=1 -f DockerfileUbuntu -t localhost/teddycloud:podcast-extensions .
+python3 tests/run_podcast_container_tests.py \
+  --image localhost/teddycloud:podcast-extensions \
+  --test-image localhost/teddycloud:podcast-extensions-tests-final --engine podman
+```
+
+Physical Toniebox 1 playback, chapter gestures, offline/resume, sync timing and
+interrupted-download/orphaned-range recovery remain pending. No Toniebox 2,
+Linux/amd64 or sanitizer coverage is claimed. Visual browser review also remains
+pending because no browser is connected; rendered component tests passed.
