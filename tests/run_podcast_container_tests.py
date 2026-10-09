@@ -39,8 +39,8 @@ def main():
                 volume = prefix + '-' + suffix
                 run('volume', 'create', volume, capture=True)
                 volumes.append(volume)
-                flags += ['-v', volume + ':' + target]
-            run('run', '--rm', '-v', volumes[1] + ':/out', '--entrypoint', 'sh', args.test_image,
+                flags += ['-v', volume + ':' + target + ':z']
+            run('run', '--rm', '-v', volumes[1] + ':/out:z', '--entrypoint', 'sh', args.test_image,
                 '-c', 'cp -a /buildenv/bin/test-template/certs/. /out/')
             environment = ['-e', 'TC_PODCAST_FIXTURES=/must-be-ignored', '-e', 'TC_PODCAST_CLOCK=/must-be-ignored']
             if nonroot:
@@ -101,6 +101,9 @@ def main():
                         raise
                     time.sleep(.2)
             print(f'Production image smoke/persistence: {"PUID=1000" if nonroot else "root"} passed', flush=True)
+        except Exception:
+            subprocess.run([args.engine, 'logs', container], check=False)
+            raise
         finally:
             subprocess.run([args.engine, 'rm', '-fv', container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for volume in volumes:

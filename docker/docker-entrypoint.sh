@@ -38,10 +38,10 @@ if [ -n "${PUID:-}" ] && [ -n "${PGID:-}" ] && [ "${PUID}" != "0" ] && [ "${PGID
   # Create or reconcile the teddy group/user with the requested ids. The
   # `|| ... ||  true` chain handles re-runs (user/group already exists at the
   # right ids) without failing the entrypoint.
-  groupadd -g "${PGID}" teddy 2>/dev/null \
+  groupadd -o -g "${PGID}" teddy 2>/dev/null \
     || groupmod -o -g "${PGID}" teddy 2>/dev/null \
     || true
-  useradd -u "${PUID}" -g "${PGID}" -M -s /bin/bash teddy 2>/dev/null \
+  useradd -o -u "${PUID}" -g "${PGID}" -M -s /bin/bash teddy 2>/dev/null \
     || usermod -o -u "${PUID}" -g "${PGID}" teddy 2>/dev/null \
     || true
 
