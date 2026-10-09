@@ -1,5 +1,7 @@
 #include "podcast_feed.h"
 #include "podcast_http.h"
+#include "podcast_ard.h"
+#include "podcast_trim.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <stdio.h>
@@ -8,6 +10,11 @@
 
 static cJSON *parse(const char *feed, unsigned n, bool oldest)
 {
+    assert(!podcast_ard_identifier("https://ardsounds.de/x/../sendung/x/123", (char[64]){0}));
+    time_t invalid_date;
+    assert(!podcast_ard_date("2026-01-01T-1:00:00Z", &invalid_date));
+    assert(!podcast_ard_date("2026-01-01T01:00:00+-1:00", &invalid_date));
+    assert(!podcast_ard_date("2026-01-01T01:00:00+01:-1", &invalid_date));
     char error[256];
     return podcast_feed_parse(feed, strlen(feed), "https://example.org/feed", n, oldest, 2000000000, error,
                               sizeof(error));
@@ -15,6 +22,33 @@ static cJSON *parse(const char *feed, unsigned n, bool oldest)
 int main(void)
 {
     assert(podcast_http_init());
+    char identifier[64];
+    assert(podcast_ard_identifier("https://ardaudiothek.de/sendung/show/23667030/?share=1", identifier));
+    assert(!strcmp(identifier, "23667030"));
+    assert(podcast_ard_identifier("https://www.ardsounds.de/sendung/show/urn%3Aard%3Ashow%3A0e3f60ed4ba198df/",
+                                  identifier));
+    assert(!strcmp(identifier, "urn:ard:show:0e3f60ed4ba198df"));
+    const char *bad_ard[] = {"https://ardsounds.de.evil.org/sendung/show/123",
+                             "http://ardsounds.de/sendung/show/123",
+                             "https://ardsounds.de/sendung/show/123/extra",
+                             "https://ardsounds.de/sendung/show/123%2f",
+                             "https://ardsounds.de/sendung/show/123%252f",
+                             "https://ardsounds.de:444/sendung/show/123",
+                             NULL};
+    for (unsigned i = 0; bad_ard[i]; i++)
+        assert(!podcast_ard_identifier(bad_ard[i], identifier));
+    time_t t1, t2;
+    assert(podcast_ard_date("2026-10-09T19:04:00+02:00", &t1));
+    assert(podcast_ard_date("2026-10-09T17:04:00Z", &t2) && t1 == t2);
+    assert(podcast_ard_date("2026-10-09T16:04:00-01:00", &t2) && t1 == t2);
+    assert(!podcast_ard_date("2026-02-30T17:04:00Z", &t2));
+    assert(!podcast_ard_date("2026-10-09T17:04:00", &t2));
+    uint64_t first, last, skip;
+    assert(podcast_trim_window(12 * 48000, 3, 3, &first, &last) && last - first == 6 * 48000);
+    assert(!podcast_trim_window(12 * 48000, 6, 6, &first, &last));
+    assert(!podcast_trim_window(12 * 48000, 13, 0, &first, &last));
+    assert(podcast_trim_overlap(2 * 48000, 2 * 48000, 3 * 48000, 9 * 48000, &skip) == 48000 && skip == 48000);
+    assert(!podcast_trim_overlap(UINT64_MAX - 1, 4, 0, UINT64_MAX, &skip));
     assert(podcast_url_valid("https://example.org/feed?x=y"));
     const char *bad[] = {"file:///etc/passwd",
                          "ftp://example.org/a",
@@ -97,6 +131,11 @@ int main(void)
     cJSON *config = cJSON_Parse("{\"feedUrl\":\"https://example.org/"
                                 "rss\",\"episodeCount\":5,\"order\":\"newest_first\",\"intervalHours\":6,\"enabled\":"
                                 "true,\"refreshOnPlacement\":false}");
+    assert(!podcast_ard_identifier("https://ardsounds.de/x/../sendung/x/123", (char[64]){0}));
+    time_t invalid_date;
+    assert(!podcast_ard_date("2026-01-01T-1:00:00Z", &invalid_date));
+    assert(!podcast_ard_date("2026-01-01T01:00:00+-1:00", &invalid_date));
+    assert(!podcast_ard_date("2026-01-01T01:00:00+01:-1", &invalid_date));
     char error[256];
     assert(podcast_config_valid(config, error, sizeof(error)));
     cJSON_SetNumberValue(cJSON_GetObjectItemCaseSensitive(config, "episodeCount"), 1.5);

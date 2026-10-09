@@ -1,0 +1,66 @@
+{
+  "data": {
+    "programSet": {
+      "id": "23667030",
+      "coreId": "urn:ard:show:0e3f60ed4ba198df",
+      "title": "Fixture show",
+      "sharingUrl": "https://www.ardsounds.de/sendung/example/urn:ard:show:0e3f60ed4ba198df/",
+      "publicationService": {
+        "title": "Fixture publisher"
+      },
+      "items": {
+        "nodes": [
+          {
+            "id": "older",
+            "assetId": "urn:ard:episode:older",
+            "title": "older",
+            "publishDate": "2026-01-01T10:00:00+02:00",
+            "isPublished": true,
+            "itemType": "EPISODE",
+            "duration": 12,
+            "audios": [
+              {
+                "downloadUrl": "https://podcasts.example.org/1.wav",
+                "allowDownload": true
+              }
+            ]
+          },
+          {
+            "id": "newer",
+            "assetId": "urn:ard:episode:newer",
+            "title": "newer",
+            "publishDate": "2026-01-01T10:00:00Z",
+            "isPublished": true,
+            "itemType": "EPISODE",
+            "duration": 12,
+            "audios": [
+              {
+                "downloadUrl": "https://podcasts.example.org/2.wav",
+                "allowDownload": true
+              }
+            ]
+          },
+          {
+            "id": "newer",
+            "assetId": "urn:ard:episode:newer",
+            "title": "newer",
+            "publishDate": "2026-01-01T10:00:00Z",
+            "isPublished": true,
+            "itemType": "EPISODE",
+            "duration": 12,
+            "audios": [
+              {
+                "downloadUrl": "https://podcasts.example.org/2.wav",
+                "allowDownload": true
+              }
+            ]
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "50"
+        }
+      }
+    }
+  }
+}

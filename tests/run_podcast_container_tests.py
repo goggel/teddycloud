@@ -57,7 +57,10 @@ def main():
             deadline = time.monotonic() + 60
             while True:
                 try:
-                    assert json.loads(get('/api/podcasts/capabilities'))['supported']
+                    capabilities = json.loads(get('/api/podcasts/capabilities'))
+                    assert capabilities['supported'] and capabilities['trimSupported']
+                    assert capabilities['sourceTypes'] == ['rss', 'ard_audiothek']
+                    assert capabilities['maxRequestBytes'] == 65536
                     break
                 except Exception:
                     if time.monotonic() > deadline:
@@ -68,7 +71,7 @@ def main():
             scripts = re.findall(r'src="([^"]+\.js)"', index)
             assert scripts
             assert any(b'/api/podcasts/' in get(src if src.startswith('/') else '/web/' + src) for src in scripts)
-            assert 'podcasts' in json.loads(get('/web/translations/en.json'))
+            assert 'trimHelp' in json.loads(get('/web/translations/en.json'))['podcasts']
             run('exec', container, 'sh', '-c',
                 '! command -v node && ! command -v python3 && '
                 '! grep -a -q TC_PODCAST_FIXTURES /usr/local/bin/teddycloud && '
@@ -82,7 +85,10 @@ def main():
                 raise AssertionError('Unexpected test route')
             config = dict(ruid='0123456789abcdef', feedUrl='https://example.org/feed.rss',
                           episodeCount=5, order='newest_first', intervalHours=0,
-                          enabled=False, refreshOnPlacement=False)
+                          enabled=False, refreshOnPlacement=False, sourceType='rss',
+                          trimStartSeconds=10, trimEndSeconds=15,
+                          episodeTrimSourceKey='rss:https://example.org/feed.rss',
+                          episodeTrims=[dict(identity='inactive', trimStartSeconds=0, trimEndSeconds=3)])
             req = urllib.request.Request(base + '/api/podcasts/subscriptions/save',
                                          data=json.dumps(config).encode(), headers={'Content-Type': 'application/json'})
             with urllib.request.urlopen(req, timeout=5) as response:
@@ -95,6 +101,8 @@ def main():
                 try:
                     subscriptions = json.loads(get('/api/podcasts/subscriptions?ruid=' + config['ruid']))['subscriptions']
                     assert subscriptions[0]['id'] == saved['id']
+                    assert subscriptions[0]['trimStartSeconds'] == 10
+                    assert subscriptions[0]['episodeTrims'] == config['episodeTrims']
                     break
                 except Exception:
                     if time.monotonic() > deadline:

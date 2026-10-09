@@ -1,6 +1,8 @@
 #if PODCAST_SUPPORT
 #include "podcast_feed.h"
 #include "podcast_http.h"
+#include "podcast_ard.h"
+#include "podcast_trim.h"
 #include <libxml/parser.h>
 #include <libxml/uri.h>
 #include <curl/curl.h>
@@ -23,14 +25,20 @@ bool podcast_config_valid(const cJSON *c, char *err, size_t size)
 {
     double n = podcast_number(c, "episodeCount"), h = podcast_number(c, "intervalHours");
     const char *order = podcast_string(c, "order");
-    bool valid = cJSON_IsObject(c) && podcast_url_valid(podcast_string(c, "feedUrl")) && n >= 1 && n <= 50 &&
-                 floor(n) == n && cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(c, "intervalHours")) && h >= 0 &&
-                 h <= 168 && floor(h) == h && (!strcmp(order, "newest_first") || !strcmp(order, "oldest_first")) &&
+    cJSON *type = cJSON_GetObjectItemCaseSensitive(c, "sourceType");
+    char identifier[64];
+    bool source = !type || (cJSON_IsString(type) && !strcmp(type->valuestring, "rss"))
+                      ? podcast_url_valid(podcast_string(c, "feedUrl"))
+                      : cJSON_IsString(type) && !strcmp(type->valuestring, "ard_audiothek") &&
+                            podcast_ard_identifier(podcast_string(c, "ardShowUrl"), identifier);
+    bool valid = cJSON_IsObject(c) && source && n >= 1 && n <= 50 && floor(n) == n &&
+                 cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(c, "intervalHours")) && h >= 0 && h <= 168 &&
+                 floor(h) == h && (!strcmp(order, "newest_first") || !strcmp(order, "oldest_first")) &&
                  cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(c, "enabled")) &&
                  cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(c, "refreshOnPlacement"));
     if (!valid)
         snprintf(err, size, "Use a public RSS URL, 1–50 episodes, a playback order and 0–168 whole hours");
-    return valid;
+    return valid && podcast_trim_valid(c, err, size);
 }
 static char *text(xmlNode *parent, const char *name)
 {
@@ -163,7 +171,7 @@ cJSON *podcast_feed_parse(const char *xml, size_t length, const char *base, unsi
             unsigned seconds = duration_seconds(duration);
             free(duration);
             if (seconds)
-                cJSON_AddNumberToObject(item, "duration", seconds);
+                cJSON_AddNumberToObject(item, "durationSeconds", seconds);
             items[length_items++] = item;
         }
         free(title);

@@ -313,7 +313,9 @@ error_t socketReceive(Socket *socket, void *data_in,
             }
         }
 
-        if (buff->buffer_used >= size)
+        /* Preserve an earlier line terminator when a full receive buffer also
+         * contains the next headers or request body. */
+        if (buff->buffer_used >= size && (!return_count || return_count > size))
         {
             return_count = size;
         }
