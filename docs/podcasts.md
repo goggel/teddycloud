@@ -108,5 +108,6 @@ for each row before calling the feature device-validated:
 | Orphaned-range 416 recovers with a full download | Pending |
 | Container restart/reconnect during playback/download | Pending |
 
-See [download protocol](podcast-download-protocol.md) for the device-specific
+See [validation results](podcast-validation.md) for verified commits and local
+images, [download protocol](podcast-download-protocol.md) for the device-specific
 recovery gate and [API](api/podcasts.md) for integration details.
