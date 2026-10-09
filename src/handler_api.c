@@ -1,3 +1,4 @@
+#include "podcast.h"
 
 #include <sys/types.h>
 #include <time.h>
@@ -4798,17 +4799,20 @@ error_t handleApiContentJsonSet(HttpConnection *connection, const char_t *uri, c
         return error;
     }
 
+    podcast_content_lock(contentPath);
     contentJson_t content_json;
     load_content_json(contentPath, &content_json, true, client_ctx->settings);
 
     char item_data[256];
     bool_t updated = false;
+    bool_t source_changed = false;
     if (queryGet(post_data, "source", item_data, sizeof(item_data)))
     {
         if (osStrcmp(item_data, content_json.source))
         {
             osFreeMem(content_json.source);
             content_json.source = strdup(item_data);
+            source_changed = true;
             updated = true;
         }
     }
@@ -4881,10 +4885,15 @@ error_t handleApiContentJsonSet(HttpConnection *connection, const char_t *uri, c
         osFreeMem(json_path);
         if (error != NO_ERROR)
         {
+            podcast_content_unlock(contentPath);
+            osFreeMem(contentPath);
+            free_content_json(&content_json);
             return error;
         }
         TRACE_INFO("Updated content json of %s\r\n", contentPath);
     }
+    if (source_changed) podcast_source_changed(contentPath, content_json.source);
+    podcast_content_unlock(contentPath);
     osFreeMem(contentPath);
     free_content_json(&content_json);
 

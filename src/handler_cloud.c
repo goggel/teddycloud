@@ -1,3 +1,5 @@
+#include "podcast.h"
+#include "tls.h"
 #include <time.h>
 #include <stdbool.h>
 #include <string.h>
@@ -636,6 +638,36 @@ error_t handleCloudContentExt(HttpConnection *connection, const char_t *uri, con
     if (tonieInfo == NULL)
     {
         return error;
+    }
+
+    if (api != V3_CHAPTER) {
+        const char *box_identity = connection->tlsContext && connection->private.authenticated
+            ? connection->tlsContext->client_cert_subject : NULL;
+        char *pinned = podcast_download_path(client_ctx->settings, box_identity,
+                                             ruid, tonieInfo->json.source, connection->request.Range.start);
+        if (pinned) {
+            if (!pinned[0]) {
+                uint32_t length = 0;
+                fsGetFileSize(tonieInfo->contentPath, &length);
+                char range[64];
+                osSnprintf(range, sizeof(range), "bytes */%" PRIu32, length);
+                httpPrepareHeader(connection, NULL, 0);
+                connection->response.statusCode = 416;
+                connection->response.contentRange = range;
+                error_t result = httpWriteResponse(connection, NULL, 0, false);
+                connection->response.contentRange = NULL;
+                free(pinned); freeTonieInfo(tonieInfo); return result;
+            }
+            if (osStrcmp(pinned, tonieInfo->contentPath)) {
+                freeTonieInfo(tonieInfo);
+                tonieInfo = getTonieInfoV2(pinned, false, false, client_ctx->settings);
+                tonieInfo->json.nocloud = true;
+                tonieInfo->json.live = false;
+                tonieInfo->json.cloud_override = false;
+                tonie_marked = false;
+            }
+            free(pinned);
+        }
     }
 
     uint8_t *token = connection->private.authentication_token;
