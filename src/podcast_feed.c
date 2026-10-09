@@ -41,7 +41,12 @@ static char *text(xmlNode *parent, const char *name)
             char *s = strdup(v ? (char *)v : "");
             xmlFree(v);
             if (strlen(s) > 512)
-                s[512] = 0;
+            {
+                size_t end = 512;
+                while (end && ((unsigned char)s[end] & 0xc0) == 0x80)
+                    end--;
+                s[end] = 0;
+            }
             for (char *p = s; *p; p++)
                 if ((unsigned char)*p < 32)
                     *p = ' ';
