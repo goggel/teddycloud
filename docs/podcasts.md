@@ -106,12 +106,12 @@ items are excluded. Show links must use HTTPS on `ardaudiothek.de` or
 `ardsounds.de` (with optional `www`), in `/sendung/<slug>/<numeric-id-or-show-URN>/`
 form. Sharing query parameters are ignored. ARD asset IDs bind overrides across
 rotating audio URLs. Search is cached for ten minutes and limited to twenty
-upstream requests per minute independently for each provider. English and German labels are supplied; other
-locales currently use English fallback text for the new controls.
+upstream requests per minute independently for each provider. English and German
+labels are supplied; other locales currently use English fallback text for the new controls.
 
 Limits: 1–50 episodes; 0–168 whole hours between checks; 5 MiB decompressed feed;
-1,000 RSS items or 20 ARD pages of 50 candidates; 200 MiB per episode; 1 GiB selected raw audio; six hours decoded
-audio; 240 MiB per completed TAF; 128 subscriptions; 32 queued jobs; one encoder
+1,000 RSS items or 20 ARD pages of 50 candidates; 200 MiB per episode; 1 GiB
+selected raw audio; six hours decoded audio; 240 MiB per completed TAF; 128 subscriptions; 32 queued jobs; one encoder
 worker. ARD lookups share a 30-second/5 MiB budget across resolution and pages;
 encoding shares a one-hour deadline. JSON request bodies are capped at 65,536
 bytes. Retained TAF generations require additional library capacity. Exceeding
@@ -146,6 +146,7 @@ for each row before calling the feature device-validated:
 | Interrupted download resumes its original generation | Pending |
 | Orphaned-range 416 recovers with a full download | Pending |
 | Container restart/reconnect during playback/download | Pending |
+| Prepared ARD episodes and trim-specific chapter transitions | Pending |
 
 See [validation results](podcast-validation.md) for verified commits and local
 images, [download protocol](podcast-download-protocol.md) for the device-specific

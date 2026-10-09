@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--image', required=True)
     parser.add_argument('--test-image', required=True)
     parser.add_argument('--engine', default=shutil.which('docker') or shutil.which('podman'))
+    parser.add_argument('--skip-service-tests', action='store_true', help='Only run production image smoke/persistence checks')
     args = parser.parse_args()
     if not args.engine:
         parser.error('Docker or Podman is required')
@@ -25,8 +26,9 @@ def main():
                                 stdout=subprocess.PIPE if capture else None, text=True)
         return result.stdout.strip() if capture else ''
 
-    print('Deterministic service/restart tests: fixture-enabled test image', flush=True)
-    run('run', '--rm', args.test_image, 'make', 'test_podcast')
+    if not args.skip_service_tests:
+        print('Deterministic service/restart tests: fixture-enabled test image', flush=True)
+        run('run', '--rm', args.test_image, 'make', 'test_podcast')
 
     for nonroot in (False, True):
         prefix = 'tc-podcast-test-' + uuid.uuid4().hex[:12]
