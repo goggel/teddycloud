@@ -1,7 +1,17 @@
 
+# Podcast service is Linux-only; disabled builds have no curl/XML dependency.
+PLATFORM ?= linux
+PODCAST_SUPPORT ?= $(if $(filter windows,$(PLATFORM)),0,1)
+PODCAST_TESTING ?= 0
+CFLAGS += -DPODCAST_SUPPORT=$(PODCAST_SUPPORT) -DPODCAST_TESTING=$(PODCAST_TESTING)
+ifeq ($(PODCAST_SUPPORT),1)
+CFLAGS += $(shell pkg-config --cflags libcurl libxml-2.0)
+LFLAGS += $(shell pkg-config --libs libcurl libxml-2.0)
+endif
+
 ## generic paths
 BIN_DIR        = bin
-OBJ_DIR        = obj
+OBJ_DIR        = obj/podcast-$(PODCAST_SUPPORT)-$(PODCAST_TESTING)
 SRC_DIR        = src
 CONTRIB_DIR    = contrib
 INSTALL_DIR    = install
@@ -574,7 +584,7 @@ workdirs: certs/server/ certs/server_tb2/ certs/client/ config/ data/www/ data/c
 .SECONDEXPANSION:
 $(EXECUTABLE): $(LINK_LO_FILE) $(OBJECTS) $(HEADERS) $(THIS_MAKEFILE) workdirs | $$(dir $$@)
 	$(QUIET)$(ECHO) '[ ${YELLOW}LINK${NC} ] ${CYAN}$@${NC}'
-	$(QUIET)$(LD) $(LFLAGS) $(LINK_LO_OPT) $(LINK_OUT_OPT)
+	$(QUIET)$(LD) $(LINK_LO_OPT) $(LFLAGS) $(LINK_OUT_OPT)
 
 .SECONDEXPANSION:
 ifneq ($(PLATFORM),windows)
@@ -843,3 +853,21 @@ test_auth_pool_reuse_with_server: build
 	$(QUIET)$(ECHO) "[ ${CYAN}TEST${NC} ] Start server, run pooled-connection auth regression test, stop server"
 	$(QUIET)tests/py/with_server.sh $(TEST_AUTH_HTTP_PORT) $(TEST_AUTH_HTTPS_PORT) $(TEST_AUTH_HTTPS_API_PORT) 60 -- \
 		tests/py/run_auth_pool_reuse.sh
+
+.PHONY: test_podcast_unit test_podcast_api_with_server test_podcast
+# Standalone parser/HTTP tests use the production transport, no fixture bypass.
+test_podcast_unit:
+	@mkdir -p bin/podcast-unit
+	$(CC) -DPODCAST_SUPPORT=1 -DPODCAST_TESTING=0 -Wall -Wextra -Werror -Iinclude -IcJSON $(shell pkg-config --cflags libcurl libxml-2.0) tests/test_podcast.c src/podcast_feed.c src/podcast_http.c cJSON/cJSON.c -o bin/podcast-unit/tests $(shell pkg-config --libs libcurl libxml-2.0) -lm
+	bin/podcast-unit/tests
+
+test_podcast_api_with_server:
+	$(MAKE) build PODCAST_SUPPORT=1 PODCAST_TESTING=1 BIN_DIR=bin/podcast-test NO_SANITIZERS=1
+	TC_SERVER_BIN=$(CURDIR)/bin/podcast-test/teddycloud bash tests/run_podcast_tests.sh
+
+test_podcast: test_podcast_unit test_podcast_api_with_server
+
+# Mode-specific objects and an unconditional link prevent stale executables
+# when switching PODCAST_SUPPORT/PODCAST_TESTING in the same checkout.
+.PHONY: podcast_link_mode
+$(EXECUTABLE): podcast_link_mode

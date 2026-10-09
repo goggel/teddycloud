@@ -14,6 +14,15 @@ cd /teddycloud
 # This pairs with `setcap 'cap_net_bind_service=+ep'` on /usr/local/bin/teddycloud
 # in the Dockerfile so the non-root user can still bind ports 80/443.
 RUN_AS=()
+child_pid=
+shutdown_requested=0
+stop_child() {
+  shutdown_requested=1
+  if [ -n "$child_pid" ]; then
+    kill -TERM "$child_pid" 2>/dev/null || true
+  fi
+}
+trap stop_child TERM INT
 if [ -n "${PUID:-}" ] && [ -n "${PGID:-}" ] && [ "${PUID}" != "0" ] && [ "${PGID}" != "0" ]; then
   # Pick whichever drop-privs helper is installed: gosu (Debian/Ubuntu) or
   # su-exec (Alpine). Both have the same calling convention (`<helper> user cmd...`).
@@ -45,7 +54,7 @@ fi
 
 if [ -n "${DOCKER_TEST:-}" ]; then
   echo "Running teddycloud --docker-test..."
-  LSAN_OPTIONS=detect_leaks=0 "${RUN_AS[@]}" teddycloud --docker-test
+  LSAN_OPTIONS=detect_leaks=0 "${RUN_AS[@]}" teddycloud --docker-test "$@"
 else
   # teddycloud requests an in-place restart by exiting with RETURNCODE_USER_RESTART
   # (-2 in the source), which the shell receives as the unsigned 8-bit code 254.
@@ -60,12 +69,22 @@ else
     set +o errexit
     if [ -n "${STRACE:-}" ]; then
       echo "Running teddycloud with strace..."
-      "${RUN_AS[@]}" strace -t -T teddycloud
+      "${RUN_AS[@]}" strace -t -T teddycloud "$@" &
     else
       echo "Running teddycloud..."
-      "${RUN_AS[@]}" teddycloud
+      "${RUN_AS[@]}" teddycloud "$@" &
     fi
+    child_pid=$!
+    wait "$child_pid"
     retVal=$?
+    if [ "$shutdown_requested" -eq 1 ]; then
+      # A trapped signal interrupts wait before the child finishes cancellation.
+      # Wait again so the encoder can reap FFmpeg and commit durable state.
+      wait "$child_pid" 2>/dev/null
+      retVal=$?
+      exit "$retVal"
+    fi
+    child_pid=
     set -o errexit
     echo "teddycloud exited with code $retVal"
     if [ "$retVal" -ne "$RESTART_CODE" ]; then

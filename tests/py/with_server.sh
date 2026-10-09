@@ -31,7 +31,7 @@ shift 4
 shift
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="$REPO_ROOT/bin/teddycloud"
+BIN="${TC_SERVER_BIN:-$REPO_ROOT/bin/teddycloud}"
 
 # a port of 0 means: pick a free one (so tests don't collide with whatever runs on the dev machine)
 free_port() {
@@ -93,6 +93,7 @@ wait_ready() { # <pid> <timeout_seconds> [any]  (any: every HTTP answer counts, 
 start_server() { # <base dir>
     (cd "$1" && exec $LINEBUF "$BIN" --base_path "$1" --config-set "$PORT_SETTINGS") >"$tmp_log" 2>&1 &
     srv_pid=$!
+    export TC_SERVER_PID="$srv_pid"
 }
 
 stop_server() {
