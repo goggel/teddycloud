@@ -143,6 +143,7 @@ request_type_t request_paths[] = {
     {REQ_GET, "/api/podcasts/capabilities", SERTY_WEB, &handleApiPodcast},
     {REQ_GET, "/api/podcasts/search", SERTY_WEB, &handleApiPodcast},
     {REQ_POST, "/api/podcasts/preview", SERTY_WEB, &handleApiPodcast},
+    {REQ_POST, "/api/podcasts/feed-info", SERTY_WEB, &handleApiPodcast},
     {REQ_POST, "/api/podcasts/subscriptions/save", SERTY_WEB, &handleApiPodcast},
     {REQ_POST, "/api/podcasts/subscriptions/refresh", SERTY_WEB, &handleApiPodcast},
     {REQ_POST, "/api/podcasts/subscriptions/detach", SERTY_WEB, &handleApiPodcast},
