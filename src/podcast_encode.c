@@ -17,12 +17,14 @@ extern char **environ;
 static void reap(pid_t child)
 {
     int status;
-    if (waitpid(child, &status, WNOHANG) == child)
+    pid_t done = waitpid(child, &status, WNOHANG);
+    if (done == child || (done < 0 && errno == ECHILD))
         return;
     kill(child, SIGTERM);
     for (unsigned i = 0; i < 10; i++)
     {
-        if (waitpid(child, &status, WNOHANG) == child)
+        done = waitpid(child, &status, WNOHANG);
+        if (done == child || (done < 0 && errno == ECHILD))
             return;
         struct timespec wait = {0, 50000000};
         nanosleep(&wait, NULL);
@@ -32,13 +34,19 @@ static void reap(pid_t child)
     {
     }
 }
+static time_t monotonic_seconds(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec;
+}
 bool podcast_encode(const char *const *inputs, size_t count, const char *output, uint32_t audio_id,
                     const atomic_bool *cancel, char *err, size_t size)
 {
     toniefile_t *taf = toniefile_create(output, audio_id, false, 0);
     bool ok = taf != NULL;
     uint64_t frames = 0;
-    time_t deadline = time(NULL) + 3600;
+    time_t deadline = monotonic_seconds() + 3600;
     for (size_t i = 0; ok && i < count; i++)
     {
         if (i && toniefile_new_chapter(taf) != NO_ERROR)
@@ -99,7 +107,7 @@ bool podcast_encode(const char *const *inputs, size_t count, const char *output,
         bool eof = false;
         while (ok && !eof)
         {
-            if (atomic_load(cancel) || time(NULL) > deadline)
+            if (atomic_load(cancel) || monotonic_seconds() > deadline)
             {
                 ok = false;
                 break;

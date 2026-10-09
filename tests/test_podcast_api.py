@@ -166,6 +166,18 @@ class PodcastAPI(unittest.TestCase):
         self.assertGreater(newer['audioId'], audio_id)
         self.assertEqual([e['identity'] for e in newer['episodes']], ['4', '3', '2'])
         updated_source = json.loads(content.read_text())['source']
+        # A downloaded enclosure that is not decodable must also preserve audio.
+        invalid = FIXTURES / 'invalid.audio'
+        invalid.write_bytes(b'not an audio file')
+        mapping_path = Path(os.environ['TC_PODCAST_FIXTURES'])
+        mapping = json.loads(mapping_path.read_text())
+        mapping['https://podcasts.example.org/5.wav'] = str(invalid)
+        mapping_path.write_text(json.dumps(mapping))
+        feed([2, 3, 4, 5])
+        request('subscriptions/refresh', {'id': saved['id']}, status=202)
+        self.wait(saved, 'error')
+        self.assertEqual(json.loads(content.read_text())['source'], updated_source)
+        self.assertEqual(taf_header(SANDBOX / 'data/library' / updated_source[6:])[0], newer['audioId'])
         # Failed XML fetch must leave the completed assignment playable.
         (FIXTURES / 'feed.xml').write_text('<broken')
         request('subscriptions/refresh', {'id': saved['id']}, status=202)
