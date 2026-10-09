@@ -1,7 +1,8 @@
 # Prepared podcast Tonies
 
 In **Tonies → Edit Tonie**, choose **Podcast** in the audio selector. Search by
-name or paste a public RSS feed URL. Choose the number of recent episodes, their
+name using the Apple RSS directory or ARD Audiothek / ARD Sounds, or paste a
+public RSS feed URL or supported ARD show link. Choose the number of recent episodes, their
 playback order, and the check interval. Preview shows the requested selection;
 **Save** starts preparation. Each episode becomes a chapter in one Tonie audio
 file. The preparation continues when the browser closes.
@@ -20,6 +21,28 @@ on that placement; newly prepared content becomes available at its next suitable
 online freshness/content request. Use the box's normal sync gesture when needed.
 Offline playback requires the box to have downloaded the entire prepared file.
 Normal playback resume is retained; listening history is not tracked per episode.
+
+## Intro and outro cuts
+
+Set default start/end cuts in whole seconds (0–21,600 per side). Preview an
+episode selection to override both cuts for individual episodes. Zero is an
+explicit override; removing an override restores the current defaults. Stored
+overrides remain available even when that episode leaves the latest selection.
+Up to 50 identities can be stored; remove inactive entries to free space.
+
+Overrides belong to the podcast source. A different source requires explicitly
+clearing the old overrides before saving. Numeric and modern URN ARD links for
+the same show share a canonical identity after preview resolves them. Edit cuts
+locally, then Save; cut edits do not fetch another preview. Cancel discards edits.
+The preview's duration is an estimate; prepared episodes display measured audio
+duration and the cuts actually applied to the last successful generation.
+
+The decoder trims 48 kHz stereo samples before TAF encoding. End cuts require
+two decode passes over the same cached input: one to count frames and one to
+encode the retained interval. This costs additional preparation time while using
+constant memory. A cut that removes an entire episode fails the whole refresh;
+the previous complete Tonie audio remains assigned. Episodes remain separate
+chapters, so normal chapter skipping can be tested on the box.
 
 ## Deployment
 
@@ -55,7 +78,16 @@ Subscriptions and download-session pins persist in `config/podcasts.json`. The
 previous committed state is backed up in `podcasts.json.bak`. A corrupt primary
 is preserved as `podcasts.json.corrupt-*` when the backup can recover it. If both
 are unusable, automatic management is disabled and the files are preserved for
-repair. Existing prepared audio can still be served from the library.
+repair. Registry version 1 migrates to version 2 after pending publications are
+recovered. The original file is retained as `podcasts.json.v1.bak`; existing IDs,
+revisions, source assignments and download pins survive. Migration does not
+re-encode synchronously; the next refresh uses the new encoder profile. Before
+downgrading, stop teddyCloud and back up config/content/library together; restore
+a consistent pre-upgrade snapshot. Restoring only the old registry can lose later
+configuration and desynchronize assignments. Unknown registry versions disable
+management without overwriting the newer file.
+
+Existing prepared audio can still be served from the library.
 
 Each subscription owns `library/podcasts/<id>/`. Completed TAF generations and
 manifests are immutable. Selected episode downloads are cached by identity and
@@ -67,15 +99,22 @@ always retained. Detached directories remain for explicit manual cleanup.
 
 Supported: public RSS 2.0 feeds with audio enclosures; MP3, M4A/MP4 audio, Ogg/Opus,
 FLAC, WAV and AAC. No Atom, private/paid feeds, credentials, Spotify or DRM.
-Search uses Apple's podcast directory, with manual RSS entry available when the
-provider is unavailable. Search is cached for ten minutes and limited to twenty
-upstream requests per minute. English and German labels are supplied; other
+Search uses Apple's podcast directory or ARD's public GraphQL API, with manual
+links available when search is unavailable. ARD supports public, published,
+downloadable episodes; livestreams, future/invalid dates and non-downloadable
+items are excluded. Show links must use HTTPS on `ardaudiothek.de` or
+`ardsounds.de` (with optional `www`), in `/sendung/<slug>/<numeric-id-or-show-URN>/`
+form. Sharing query parameters are ignored. ARD asset IDs bind overrides across
+rotating audio URLs. Search is cached for ten minutes and limited to twenty
+upstream requests per minute independently for each provider. English and German labels are supplied; other
 locales currently use English fallback text for the new controls.
 
 Limits: 1–50 episodes; 0–168 whole hours between checks; 5 MiB decompressed feed;
-1,000 RSS items; 200 MiB per episode; 1 GiB selected raw audio; six hours decoded
+1,000 RSS items or 20 ARD pages of 50 candidates; 200 MiB per episode; 1 GiB selected raw audio; six hours decoded
 audio; 240 MiB per completed TAF; 128 subscriptions; 32 queued jobs; one encoder
-worker. Retained TAF generations require additional library capacity. Exceeding
+worker. ARD lookups share a 30-second/5 MiB budget across resolution and pages;
+encoding shares a one-hour deadline. JSON request bodies are capped at 65,536
+bytes. Retained TAF generations require additional library capacity. Exceeding
 limits errors instead of silently dropping selected episodes. HTTP destinations
 must be public unicast; local/private/link-local addresses and URL credentials
 are rejected. The podcast HTTP helper intentionally ignores proxy environment

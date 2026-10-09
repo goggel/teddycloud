@@ -4,6 +4,8 @@
 #include "podcast_feed.h"
 #include "podcast_http.h"
 #include "podcast_encode.h"
+#include "podcast_ard.h"
+#include "podcast_trim.h"
 #include "mutex_manager.h"
 #include "toniefile.h"
 #include "hash/sha256.h"
@@ -16,6 +18,7 @@
 #include <sys/statvfs.h>
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <dirent.h>
 #include <curl/curl.h>
 #include <libxml/parser.h>
@@ -76,11 +79,11 @@ static unsigned active_requests;
 static cJSON *registry;
 static char *registry_path;
 static char running_id[33];
-static time_t search_time;
-static char *search_key;
-static cJSON *search_cache;
-static time_t search_window;
-static unsigned search_requests;
+static time_t search_time[2];
+static char *search_key[2];
+static cJSON *search_cache[2];
+static time_t search_window[2];
+static unsigned search_requests[2];
 
 void podcast_content_lock(const char *path)
 {
@@ -254,19 +257,46 @@ static cJSON *read_json(const char *path)
     fclose(f);
     return o;
 }
+static bool legacy_config_valid(const cJSON *s)
+{
+    double n = podcast_number(s, "episodeCount"), h = podcast_number(s, "intervalHours");
+    const char *order = podcast_string(s, "order");
+    return podcast_url_valid(podcast_string(s, "feedUrl")) && n >= 1 && n <= 50 && floor(n) == n &&
+           cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(s, "intervalHours")) && h >= 0 && h <= 168 &&
+           floor(h) == h && (!strcmp(order, "newest_first") || !strcmp(order, "oldest_first")) &&
+           cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(s, "enabled")) &&
+           cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(s, "refreshOnPlacement"));
+}
 static bool valid_registry(cJSON *o)
 {
-    if (!cJSON_IsObject(o) || podcast_number(o, "version") != 1 ||
+    double version = podcast_number(o, "version");
+    if (!cJSON_IsObject(o) || (version != 1 && version != 2) ||
         !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(o, "subscriptions")) ||
         !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(o, "pins")))
         return false;
     cJSON *s;
-    char error[128];
-    cJSON_ArrayForEach(
-        s, cJSON_GetObjectItemCaseSensitive(o, "subscriptions")) if (!hex(podcast_string(s, "id"), 32) ||
-                                                                     !hex(podcast_string(s, "ruid"), 16) ||
-                                                                     !podcast_config_valid(s, error, sizeof(error)) ||
-                                                                     podcast_number(s, "revision") < 1) return false;
+    char error[256];
+    cJSON_ArrayForEach(s, cJSON_GetObjectItemCaseSensitive(o, "subscriptions"))
+    {
+        if (!hex(podcast_string(s, "id"), 32) || !hex(podcast_string(s, "ruid"), 16) ||
+            podcast_number(s, "revision") < 1)
+            return false;
+        if (version == 1)
+        {
+            if (!legacy_config_valid(s))
+                return false;
+        }
+        else if (!podcast_config_valid(s, error, sizeof(error)) ||
+                 !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(s, "sourceType")) ||
+                 !cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(s, "trimStartSeconds")) ||
+                 !cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(s, "trimEndSeconds")) ||
+                 !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(s, "episodeTrims")) ||
+                 !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(s, "episodeTrimSourceKey")) ||
+                 !*podcast_string(s, "sourceKey") || strlen(podcast_string(s, "sourceKey")) > 2052 ||
+                 (cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(s, "episodeTrims")) &&
+                  strcmp(podcast_string(s, "sourceKey"), podcast_string(s, "episodeTrimSourceKey"))))
+            return false;
+    }
     return true;
 }
 static bool persist(void)
@@ -316,20 +346,116 @@ static bool enqueue(cJSON *s)
 static cJSON *preview(const cJSON *body, const atomic_bool *cancel, char *error, size_t size)
 {
     unsigned n = (unsigned)podcast_number(body, "episodeCount");
-    const char *order = podcast_string(body, "order"), *url = podcast_string(body, "feedUrl");
-    if (n < 1 || n > 50 || podcast_number(body, "episodeCount") != n ||
-        (strcmp(order, "newest_first") && strcmp(order, "oldest_first")) || !podcast_url_valid(url))
+    bool oldest = !strcmp(podcast_string(body, "order"), "oldest_first");
+    cJSON *p = NULL;
+    if (!strcmp(podcast_string(body, "sourceType"), "ard_audiothek"))
+        p = podcast_ard_preview(podcast_string(body, "ardShowUrl"), n, oldest, podcast_now(), cancel, error, size);
+    else
     {
-        snprintf(error, size, "Choose a valid RSS URL, episode count and order");
-        return NULL;
+        podcast_response_t r;
+        if (!podcast_http_get(podcast_string(body, "feedUrl"), PODCAST_FEED_LIMIT, NULL, cancel, &r, error, size))
+            return NULL;
+        p = podcast_feed_parse(r.data, r.length, r.final_url, n, oldest, podcast_now(), error, size);
+        podcast_response_free(&r);
+        if (p)
+        {
+            str(p, "sourceType", "rss");
+            str(p, "sourceKey", podcast_string(body, "sourceKey"));
+        }
     }
-    podcast_response_t r;
-    if (!podcast_http_get(url, PODCAST_FEED_LIMIT, NULL, cancel, &r, error, size))
-        return NULL;
-    cJSON *p = podcast_feed_parse(r.data, r.length, r.final_url, n, !strcmp(order, "oldest_first"), podcast_now(),
-                                  error, size);
-    podcast_response_free(&r);
+    if (p)
+        podcast_trim_preview(p, body);
     return p;
+}
+/* Normalize outside service/content locks. The request wrapper retains a private
+ * revision snapshot and request_impl checks that revision again before saving. */
+static cJSON *normalize_config(const cJSON *input, const cJSON *prior, bool is_preview, int *status)
+{
+    cJSON *body = cJSON_Duplicate(input, true);
+    const char *fields[] = {"sourceType",           "ardShowUrl", "trimStartSeconds", "trimEndSeconds", "episodeTrims",
+                            "episodeTrimSourceKey", NULL};
+    for (unsigned i = 0; fields[i]; i++)
+        if (!cJSON_GetObjectItemCaseSensitive(body, fields[i]))
+        {
+            cJSON *value = cJSON_GetObjectItemCaseSensitive(prior, fields[i]);
+            if (value)
+                cJSON_AddItemToObject(body, fields[i], cJSON_Duplicate(value, true));
+        }
+    if (!cJSON_GetObjectItemCaseSensitive(body, "sourceType"))
+        str(body, "sourceType", "rss");
+    podcast_trim_defaults(body);
+    if (is_preview)
+    {
+        if (!cJSON_GetObjectItemCaseSensitive(body, "intervalHours"))
+            num(body, "intervalHours", 0);
+        if (!cJSON_GetObjectItemCaseSensitive(body, "enabled"))
+            boolean(body, "enabled", true);
+        if (!cJSON_GetObjectItemCaseSensitive(body, "refreshOnPlacement"))
+            boolean(body, "refreshOnPlacement", false);
+    }
+    char error[256];
+    if (!podcast_config_valid(body, error, sizeof(error)))
+    {
+        *status = 400;
+        goto fail;
+    }
+    if (!strcmp(podcast_string(body, "sourceType"), "ard_audiothek"))
+    {
+        if (is_preview)
+            return body;
+        cJSON *source = podcast_ard_resolve(podcast_string(body, "ardShowUrl"), &stopping, error, sizeof(error));
+        if (!source)
+        {
+            *status = 502;
+            goto fail;
+        }
+        str(body, "sourceKey", podcast_string(source, "sourceKey"));
+        str(body, "ardShowId", podcast_string(source, "ardShowId"));
+        str(body, "ardShowUrl", podcast_string(source, "ardShowUrl"));
+        cJSON_Delete(source);
+        str(body, "feedUrl", "");
+    }
+    else
+    {
+        CURLU *u = curl_url();
+        char *url = NULL;
+        curl_url_set(u, CURLUPART_URL, podcast_string(body, "feedUrl"), 0);
+        curl_url_get(u, CURLUPART_URL, &url, CURLU_NO_DEFAULT_PORT);
+        if (!url)
+        {
+            curl_url_cleanup(u);
+            *status = 400;
+            snprintf(error, sizeof(error), "Invalid RSS URL");
+            goto fail;
+        }
+        str(body, "feedUrl", url);
+        char *key = custom_asprintf("rss:%s", url);
+        str(body, "sourceKey", key);
+        free(key);
+        curl_free(url);
+        curl_url_cleanup(u);
+        str(body, "ardShowUrl", "");
+        str(body, "ardShowId", "");
+    }
+    if (cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(body, "episodeTrims")))
+    {
+        if (strcmp(podcast_string(body, "episodeTrimSourceKey"), podcast_string(body, "sourceKey")))
+        {
+            *status = 409;
+            snprintf(error, sizeof(error),
+                     "Episode overrides belong to a different source; explicitly clear them before changing source");
+            goto fail;
+        }
+    }
+    else
+        str(body, "episodeTrimSourceKey", "");
+    return body;
+fail:
+    cJSON_Delete(body);
+    cJSON *result = failure(status, *status, error);
+    if (*status == 409)
+        str(cJSON_GetObjectItemCaseSensitive(result, "error"), "code", "trim_source_mismatch");
+    return result;
 }
 static void stage(const char *id, unsigned revision, const char *state)
 {
@@ -399,7 +525,7 @@ static void prepare(cJSON *job)
          *path = NULL;
     char *inputs[50] = {0};
     size_t count = 0;
-    cJSON *feed = NULL, *fingerprint = NULL;
+    cJSON *feed = NULL;
     bool ok = false, unchanged = false;
     if (!scope(podcast_string(job, "overlay"), &root, &library) || strcmp(root, podcast_string(job, "scope")) ||
         strcmp(library, podcast_string(job, "library")))
@@ -411,18 +537,25 @@ static void prepare(cJSON *job)
     feed = preview(job, &job_cancel, error, sizeof(error));
     if (!feed)
         goto done;
+    if (strcmp(podcast_string(feed, "sourceKey"), podcast_string(job, "sourceKey")))
+    {
+        snprintf(error, sizeof(error), "Source identity changed; save the subscription again");
+        goto done;
+    }
     cJSON *episodes = cJSON_GetObjectItemCaseSensitive(feed, "episodes");
-    fingerprint = cJSON_Duplicate(episodes, true);
     /* Encoding profile participates in fingerprint; titles/dates alone do not
      * change audio, but enclosure URL and ordered GUID identity do. */
     cJSON *f = cJSON_CreateObject();
-    cJSON_AddStringToObject(f, "profile", "taf-opus-48k-stereo-v1");
+    cJSON_AddStringToObject(f, "profile", "taf-opus-48k-stereo-trim-v2");
+    cJSON_AddStringToObject(f, "sourceKey", podcast_string(feed, "sourceKey"));
     cJSON *keys = cJSON_AddArrayToObject(f, "episodes"), *ep;
     cJSON_ArrayForEach(ep, episodes)
     {
         cJSON *k = cJSON_CreateObject();
         cJSON_AddStringToObject(k, "identity", podcast_string(ep, "identity"));
         cJSON_AddStringToObject(k, "url", podcast_string(ep, "url"));
+        num(k, "trimStartSeconds", podcast_number(ep, "trimStartSeconds"));
+        num(k, "trimEndSeconds", podcast_number(ep, "trimEndSeconds"));
         cJSON_AddItemToArray(keys, k);
     }
     char *serialized = cJSON_PrintUnformatted(f);
@@ -538,8 +671,18 @@ static void prepare(cJSON *job)
         }
     }
     stage(id, revision, "encoding");
-    if (!podcast_encode((const char *const *)inputs, count, output, audio_id, &job_cancel, error, sizeof(error)))
+    podcast_encode_input_t encoding[50];
+    double durations[50];
+    for (size_t i = 0; i < count; i++)
+    {
+        cJSON *episode = cJSON_GetArrayItem(episodes, (int)i);
+        encoding[i] = (podcast_encode_input_t){inputs[i], (uint32_t)podcast_number(episode, "trimStartSeconds"),
+                                               (uint32_t)podcast_number(episode, "trimEndSeconds")};
+    }
+    if (!podcast_encode(encoding, count, output, audio_id, &job_cancel, durations, error, sizeof(error)))
         goto done;
+    for (size_t i = 0; i < count; i++)
+        num(cJSON_GetArrayItem(episodes, (int)i), "trimmedDurationSeconds", durations[i]);
     int fd = open(output, O_RDONLY | O_CLOEXEC);
     bool synced = fd >= 0 && fsync(fd) == 0;
     if (fd >= 0)
@@ -550,6 +693,7 @@ static void prepare(cJSON *job)
         goto done;
     }
     cJSON *manifest = cJSON_Duplicate(feed, true);
+    cJSON_AddStringToObject(manifest, "encoderProfile", "taf-opus-48k-stereo-trim-v2");
     cJSON_AddNumberToObject(manifest, "audioId", audio_id);
     cJSON_AddStringToObject(manifest, "source", source);
     cJSON_AddNumberToObject(manifest, "createdAt", podcast_now());
@@ -679,7 +823,6 @@ done:
     }
     pthread_mutex_unlock(&service_lock);
     cJSON_Delete(feed);
-    cJSON_Delete(fingerprint);
     free(root);
     free(library);
     free(dir);
@@ -838,24 +981,26 @@ void podcast_init(void)
     xmlInitParser();
     registry_path = custom_asprintf("%s/podcasts.json", get_settings()->internal.configdirfull);
     registry = read_json(registry_path);
+    bool unsupported = registry && cJSON_IsObject(registry) && podcast_number(registry, "version") != 1 &&
+                       podcast_number(registry, "version") != 2;
     if (!valid_registry(registry))
     {
         bool existed = access(registry_path, F_OK) == 0;
         cJSON_Delete(registry);
         registry = NULL;
         char *backup = custom_asprintf("%s.bak", registry_path);
-        registry = read_json(backup);
+        registry = unsupported ? NULL : read_json(backup);
         bool backup_existed = access(backup, F_OK) == 0;
         free(backup);
         if (!valid_registry(registry))
         {
             cJSON_Delete(registry);
             registry = cJSON_CreateObject();
-            num(registry, "version", 1);
+            num(registry, "version", 2);
             num(registry, "lastAudioId", 0);
             cJSON_AddArrayToObject(registry, "subscriptions");
             cJSON_AddArrayToObject(registry, "pins");
-            damaged = existed || backup_existed;
+            damaged = unsupported || existed || backup_existed;
         }
         else if (existed)
         {
@@ -867,7 +1012,54 @@ void podcast_init(void)
     }
     available = !damaged;
     atomic_store(&stopping, false);
+    cJSON *legacy = podcast_number(registry, "version") == 1 ? cJSON_Duplicate(registry, true) : NULL;
     recover();
+    if (legacy && available)
+    {
+        char *backup = custom_asprintf("%s.v1.bak", registry_path);
+        bool backed = access(backup, F_OK) == 0;
+        if (backed)
+        {
+            cJSON *saved = read_json(backup);
+            backed = valid_registry(saved) && podcast_number(saved, "version") == 1;
+            cJSON_Delete(saved);
+        }
+        else
+            backed = write_json(backup, legacy);
+        free(backup);
+        if (backed)
+        {
+            cJSON *s;
+            cJSON_ArrayForEach(s, subscriptions())
+            {
+                str(s, "sourceType", "rss");
+                podcast_trim_defaults(s);
+                CURLU *u = curl_url();
+                char *url = NULL;
+                curl_url_set(u, CURLUPART_URL, podcast_string(s, "feedUrl"), 0);
+                curl_url_get(u, CURLUPART_URL, &url, CURLU_NO_DEFAULT_PORT);
+                char *key = custom_asprintf("rss:%s", url ? url : podcast_string(s, "feedUrl"));
+                str(s, "sourceKey", key);
+                free(key);
+                curl_free(url);
+                curl_url_cleanup(u);
+                cJSON *ep;
+                cJSON_ArrayForEach(ep, cJSON_GetObjectItemCaseSensitive(s, "episodes"))
+                {
+                    num(ep, "trimStartSeconds", 0);
+                    num(ep, "trimEndSeconds", 0);
+                }
+            }
+            num(registry, "version", 2);
+            backed = valid_registry(registry) && persist();
+        }
+        if (!backed)
+        {
+            damaged = true;
+            available = false;
+        }
+    }
+    cJSON_Delete(legacy);
     if (available)
     {
         if (pthread_create(&worker, NULL, work, NULL) == 0)
@@ -899,10 +1091,13 @@ void podcast_shutdown(void)
     free(registry_path);
     registry_path = NULL;
     started = false;
-    cJSON_Delete(search_cache);
-    search_cache = NULL;
-    free(search_key);
-    search_key = NULL;
+    for (unsigned i = 0; i < 2; i++)
+    {
+        cJSON_Delete(search_cache[i]);
+        search_cache[i] = NULL;
+        free(search_key[i]);
+        search_key[i] = NULL;
+    }
     podcast_http_cleanup();
     xmlCleanupParser();
 }
@@ -972,31 +1167,36 @@ void podcast_source_changed(const char *path, const char *source)
 }
 static cJSON *discovery(const cJSON *body, int *status)
 {
+    const char *provider = podcast_string(body, "provider");
+    if (*provider && strcmp(provider, "apple") && strcmp(provider, "ard_audiothek"))
+        return failure(status, 400, "Unknown podcast search provider");
+    unsigned index = !strcmp(provider, "ard_audiothek");
     const char *query = podcast_string(body, "q"), *country = podcast_string(body, "country");
     if (strlen(query) < 2 || strlen(query) > 100 || strlen(country) != 2 || !isalpha((unsigned char)country[0]) ||
         !isalpha((unsigned char)country[1]))
         return failure(status, 400, "Enter 2–100 search characters and a two-letter country code");
-    char *key = custom_asprintf("%s:%s", country, query);
+    char *key = custom_asprintf("%s:%s:%s", index ? "ard_audiothek" : "apple", country, query);
     pthread_mutex_lock(&discovery_lock);
-    if (search_cache && search_key && !strcmp(key, search_key) && podcast_now() - search_time < 600)
+    if (search_cache[index] && search_key[index] && !strcmp(key, search_key[index]) &&
+        podcast_now() - search_time[index] < 600)
     {
-        cJSON *r = cJSON_Duplicate(search_cache, true);
+        cJSON *r = cJSON_Duplicate(search_cache[index], true);
         pthread_mutex_unlock(&discovery_lock);
         free(key);
         return r;
     }
-    if (podcast_now() - search_window >= 60)
+    if (podcast_now() - search_window[index] >= 60)
     {
-        search_window = podcast_now();
-        search_requests = 0;
+        search_window[index] = podcast_now();
+        search_requests[index] = 0;
     }
-    if (search_requests >= 20)
+    if (search_requests[index] >= 20)
     {
         pthread_mutex_unlock(&discovery_lock);
         free(key);
         return failure(status, 429, "Search is busy; wait a minute or enter an RSS URL");
     }
-    search_requests++;
+    search_requests[index]++;
     char *escaped = curl_easy_escape(NULL, query, 0),
          *url =
              custom_asprintf("https://itunes.apple.com/search?media=podcast&entity=podcast&limit=20&country=%s&term=%s",
@@ -1005,7 +1205,9 @@ static cJSON *discovery(const cJSON *body, int *status)
     char error[256];
     podcast_response_t response;
     cJSON *result = NULL;
-    if (podcast_http_get(url, PODCAST_FEED_LIMIT, NULL, &stopping, &response, error, sizeof(error)))
+    if (index)
+        result = podcast_ard_search(query, &stopping, error, sizeof(error));
+    else if (podcast_http_get(url, PODCAST_FEED_LIMIT, NULL, &stopping, &response, error, sizeof(error)))
     {
         cJSON *provider = response.data ? cJSON_Parse(response.data) : NULL;
         if (cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(provider, "results")))
@@ -1016,6 +1218,7 @@ static cJSON *discovery(const cJSON *body, int *status)
                                          provider, "results")) if (podcast_url_valid(podcast_string(item, "feedUrl")))
             {
                 cJSON *entry = cJSON_CreateObject();
+                str(entry, "sourceType", "rss");
                 num(entry, "providerId", podcast_number(item, "collectionId"));
                 str(entry, "title", podcast_string(item, "collectionName"));
                 str(entry, "author", podcast_string(item, "artistName"));
@@ -1029,12 +1232,12 @@ static cJSON *discovery(const cJSON *body, int *status)
     free(url);
     if (result)
     {
-        cJSON_Delete(search_cache);
-        search_cache = cJSON_Duplicate(result, true);
-        free(search_key);
-        search_key = key;
+        cJSON_Delete(search_cache[index]);
+        search_cache[index] = cJSON_Duplicate(result, true);
+        free(search_key[index]);
+        search_key[index] = key;
         key = NULL;
-        search_time = podcast_now();
+        search_time[index] = podcast_now();
     }
     pthread_mutex_unlock(&discovery_lock);
     free(key);
@@ -1050,10 +1253,18 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
         boolean(o, "supported", available);
         num(o, "maxEpisodes", 50);
         num(o, "maxIntervalHours", 168);
-        num(o, "maxBodyBytes", 16384);
+        num(o, "maxBodyBytes", 65536);
+        num(o, "maxRequestBytes", 65536);
+        num(o, "maxTrimSeconds", 21600);
+        num(o, "maxEpisodeTrims", 50);
+        boolean(o, "trimSupported", true);
+        cJSON *types = cJSON_AddArrayToObject(o, "sourceTypes");
+        cJSON_AddItemToArray(types, cJSON_CreateString("rss"));
+        cJSON_AddItemToArray(types, cJSON_CreateString("ard_audiothek"));
         num(o, "maxDurationHours", 6);
         if (damaged)
-            str(o, "message", "Podcast registry is corrupt; restore podcasts.json or its backup before using podcasts");
+            str(o, "message",
+                "Podcast registry needs repair or migration could not be saved; check storage and backups");
         return o;
     }
     if (!available)
@@ -1062,13 +1273,17 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
         return discovery(body, status);
     if (!strcmp(action, "preview"))
     {
-        double n = podcast_number(body, "episodeCount");
-        const char *order = podcast_string(body, "order");
-        if (!podcast_url_valid(podcast_string(body, "feedUrl")) || n < 1 || n > 50 || n != (unsigned)n ||
-            (strcmp(order, "newest_first") && strcmp(order, "oldest_first")))
-            return failure(status, 400, "Choose a valid RSS URL, episode count and order");
         char error[256];
         cJSON *r = preview(body, &stopping, error, sizeof(error));
+        if (r && cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(body, "episodeTrims")) &&
+            strcmp(podcast_string(body, "episodeTrimSourceKey"), podcast_string(r, "sourceKey")))
+        {
+            cJSON_Delete(r);
+            cJSON *conflict =
+                failure(status, 409, "Episode overrides belong to a different source; clear them explicitly");
+            str(cJSON_GetObjectItemCaseSensitive(conflict, "error"), "code", "trim_source_mismatch");
+            return conflict;
+        }
         return r ? r : failure(status, 502, error);
     }
     char *root = NULL, *library = NULL;
@@ -1222,7 +1437,20 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
             cJSON_AddItemToArray(subscriptions(), s);
             *status = 201;
         }
-        const char *keys[] = {"feedUrl", "episodeCount", "order", "intervalHours", "refreshOnPlacement", "enabled",
+        const char *keys[] = {"feedUrl",
+                              "sourceType",
+                              "sourceKey",
+                              "ardShowUrl",
+                              "ardShowId",
+                              "trimStartSeconds",
+                              "trimEndSeconds",
+                              "episodeTrims",
+                              "episodeTrimSourceKey",
+                              "episodeCount",
+                              "order",
+                              "intervalHours",
+                              "refreshOnPlacement",
+                              "enabled",
                               NULL};
         for (unsigned i = 0; keys[i]; i++)
         {
@@ -1314,7 +1542,47 @@ cJSON *podcast_request(const char *action, const char *overlay, const char *ruid
     }
     active_requests++;
     pthread_mutex_unlock(&service_lock);
-    cJSON *result = request_impl(action, overlay, ruid, body, status);
+    cJSON *normalized = NULL, *result = NULL, *prior = NULL;
+    bool config = !strcmp(action, "preview") || !strcmp(action, "subscriptions/save");
+    if (config)
+    {
+        *status = 200;
+        if (!strcmp(action, "subscriptions/save"))
+        {
+            char *root = NULL, *library = NULL;
+            if (!scope(overlay, &root, &library))
+                result = failure(status, 404, "Unknown overlay or missing storage");
+            else if (*podcast_string(body, "id") && !hex(podcast_string(body, "id"), 32))
+                result = failure(status, 400, "Invalid subscription ID");
+            else if (*podcast_string(body, "id"))
+            {
+                pthread_mutex_lock(&service_lock);
+                cJSON *existing = find(podcast_string(body, "id"));
+                if (!existing || strcmp(root, podcast_string(existing, "scope")))
+                    result = failure(status, 404, "Subscription not found in this overlay");
+                else if (podcast_number(body, "expectedRevision") != podcast_number(existing, "revision"))
+                    result = failure(status, 409, "Subscription changed; reopen the editor");
+                else
+                    prior = cJSON_Duplicate(existing, true);
+                pthread_mutex_unlock(&service_lock);
+            }
+            free(root);
+            free(library);
+        }
+        if (!result)
+        {
+            normalized = normalize_config(body, prior, !strcmp(action, "preview"), status);
+            if (*status != 200)
+            {
+                result = normalized;
+                normalized = NULL;
+            }
+        }
+    }
+    if (!result)
+        result = request_impl(action, overlay, ruid, normalized ? normalized : body, status);
+    cJSON_Delete(prior);
+    cJSON_Delete(normalized);
     pthread_mutex_lock(&service_lock);
     active_requests--;
     pthread_cond_broadcast(&wake);

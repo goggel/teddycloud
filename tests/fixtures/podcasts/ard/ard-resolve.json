@@ -1,0 +1,13 @@
+{
+  "data": {
+    "programSetByCoreId": {
+      "id": "23667030",
+      "coreId": "urn:ard:show:0e3f60ed4ba198df",
+      "title": "Fixture show",
+      "sharingUrl": "https://www.ardsounds.de/sendung/example/urn:ard:show:0e3f60ed4ba198df/",
+      "publicationService": {
+        "title": "Fixture publisher"
+      }
+    }
+  }
+}

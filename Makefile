@@ -859,7 +859,7 @@ test_auth_pool_reuse_with_server: build
 # Standalone parser/HTTP tests use the production transport, no fixture bypass.
 test_podcast_unit:
 	@mkdir -p bin/podcast-unit
-	$(CC) -DPODCAST_SUPPORT=1 -DPODCAST_TESTING=0 -Wall -Wextra -Werror -Iinclude -IcJSON $(shell pkg-config --cflags libcurl libxml-2.0) tests/test_podcast.c src/podcast_feed.c src/podcast_http.c cJSON/cJSON.c -o bin/podcast-unit/tests $(shell pkg-config --libs libcurl libxml-2.0) -lm
+	$(CC) -DPODCAST_SUPPORT=1 -DPODCAST_TESTING=0 -Wall -Wextra -Werror -Iinclude -IcJSON $(shell pkg-config --cflags libcurl libxml-2.0) tests/test_podcast.c src/podcast_feed.c src/podcast_http.c src/podcast_ard.c src/podcast_trim.c cJSON/cJSON.c -o bin/podcast-unit/tests $(shell pkg-config --libs libcurl libxml-2.0) -lm
 	bin/podcast-unit/tests
 
 test_podcast_api_with_server:
