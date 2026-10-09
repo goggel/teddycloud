@@ -182,6 +182,37 @@ class PodcastAPI(unittest.TestCase):
         finally:
             path.write_text(original)
 
+    def test_ard_cumulative_and_page_limits(self):
+        from podcast_ard_fixtures import query_url, SHOW_ID
+        mapping_path = Path(os.environ['TC_PODCAST_FIXTURES'])
+        original_mapping = mapping_path.read_text()
+        mapping = json.loads(original_mapping)
+        original_pages = {p: p.read_text() for p in [FIXTURES/'ard-page-0.json', FIXTURES/'ard-page-50.json']}
+        show = json.loads((FIXTURES/'ard-show.json').read_text())['data']['programSet']
+        config = dict(sourceType='ard_audiothek', ardShowUrl=SHOW_URL, episodeCount=50, order='newest_first')
+        try:
+            paths = []
+            for offset in range(0, 1000, 50):
+                path = FIXTURES / f'ard-limit-{offset}.json'
+                nodes = [dict(id=str(offset+i), isPublished=False) for i in range(50)]
+                path.write_text(json.dumps({'data':{'programSet':dict(show, items=dict(nodes=nodes, pageInfo=dict(hasNextPage=True)))}}))
+                mapping[query_url('Show', {'id':SHOW_ID, 'offset':offset, 'count':50})] = str(path)
+                paths.append(path)
+            mapping_path.write_text(json.dumps(mapping))
+            request('preview', config, status=502)  # Stops at twenty pages, with no playable selection.
+            for path in paths:
+                data = json.loads(path.read_text())
+                data['ignoredPadding'] = 'x' * (300 * 1024)
+                path.write_text(json.dumps(data))
+            request('preview', config, status=502)  # Aggregate exceeds 5 MiB before page twenty.
+            paths[0].write_text('{' + 'x' * (5 * 1024 * 1024))
+            request('preview', config, status=502)  # Oversized individual response.
+            paths[0].write_text('{malformed')
+            request('preview', config, status=502)
+        finally:
+            mapping_path.write_text(original_mapping)
+            for path, data in original_pages.items(): path.write_text(data)
+
     def test_capabilities_and_validation(self):
         self.assertTrue(request('capabilities')['supported'])
         self.assertEqual(request('subscriptions')['subscriptions'], [])
@@ -527,6 +558,7 @@ class PodcastAPI(unittest.TestCase):
             audio_id, chapters = taf_header(audio)
             self.assertEqual(len(chapters), count)
             self.assertEqual(audio_id, recovered['audioId'])
+            self.assertTrue(all('trimmedDurationSeconds' in e and e['trimStartSeconds'] == 0 and e['trimEndSeconds'] == 0 for e in recovered['episodes']))
             self.assertGreater(audio_id, first['audioId'])
         # Manual assignment must win against future jobs.
         req = urllib.request.Request(BASE + '/content/json/set/' + saved['ruid'], data=b'source=')

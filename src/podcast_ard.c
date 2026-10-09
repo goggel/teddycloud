@@ -134,12 +134,23 @@ char *podcast_ard_query_url(const char *operation, const cJSON *variables)
          *v = json ? curl_easy_escape(NULL, json, 0) : NULL, *url = NULL;
     if (q && v)
     {
-        size_t length = strlen(q) + strlen(v) + 64;
-        if (length <= 2049)
+        const char prefix[] = "https://api.ardaudiothek.de/graphql?query=", separator[] = "&variables=";
+        size_t q_length = strlen(q), v_length = strlen(v);
+        size_t length = sizeof(prefix) - 1 + q_length + sizeof(separator) - 1 + v_length;
+        if (length <= 2048)
         {
-            url = malloc(length);
+            url = malloc(length + 1);
             if (url)
-                snprintf(url, length, "https://api.ardaudiothek.de/graphql?query=%s&variables=%s", q, v);
+            {
+                char *p = url;
+                memcpy(p, prefix, sizeof(prefix) - 1);
+                p += sizeof(prefix) - 1;
+                memcpy(p, q, q_length);
+                p += q_length;
+                memcpy(p, separator, sizeof(separator) - 1);
+                p += sizeof(separator) - 1;
+                memcpy(p, v, v_length + 1);
+            }
         }
     }
     free(json);
