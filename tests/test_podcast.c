@@ -81,6 +81,16 @@ int main(void)
     assert(!parse("<rss><channel/></rss>", 1, false));
     assert(!parse("<broken", 1, false));
     assert(!parse(feed, 0, false));
+    char unicode_feed[1024];
+    char title[516];
+    memset(title, 'a', 511);
+    strcpy(title + 511, "\xe2\x82\xac");
+    snprintf(unicode_feed, sizeof(unicode_feed),
+             "<rss><channel><title>%s</title><item><enclosure type='audio/mpeg' url='/a.mp3'/></item></channel></rss>",
+             title);
+    p = parse(unicode_feed, 1, false);
+    assert(p && strlen(podcast_string(p, "title")) == 511);
+    cJSON_Delete(p);
     char oversized_error[256];
     assert(!podcast_feed_parse(feed, PODCAST_FEED_LIMIT + 1, "https://example.org/feed", 1, false, 2000000000,
                                oversized_error, sizeof(oversized_error)));
