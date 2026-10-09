@@ -18,3 +18,5 @@ bool podcast_address_public(int family, const void *address);
 bool podcast_http_get(const char *url, size_t limit, const char *file, const atomic_bool *cancel,
                       podcast_response_t *response, char *error, size_t error_size);
 void podcast_response_free(podcast_response_t *response);
+bool podcast_http_get_timed(const char *url, size_t limit, const char *file, const atomic_bool *cancel,
+                            podcast_response_t *response, char *error, size_t error_size, long timeout_ms);

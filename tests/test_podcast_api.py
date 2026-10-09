@@ -1,5 +1,7 @@
 """Disposable-server integration tests. Never defaults to a household instance."""
 import hashlib
+import array
+import math
 import json
 import os
 import signal
@@ -17,6 +19,7 @@ import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sim import box as box_module, rtnl
+from podcast_ard_fixtures import install as install_ard, SHOW_URL, CORE_ID
 box_module.BIN = Path(os.environ['TC_SERVER_BIN'])
 BASE = os.environ['TEDDYCLOUD_BASE_URL']
 SANDBOX = Path(os.environ['TC_SANDBOX'])
@@ -93,6 +96,7 @@ class PodcastAPI(unittest.TestCase):
             {'collectionId': 42, 'collectionName': '<b>Example Show</b>', 'artistName': 'Author', 'feedUrl': FEED},
             {'collectionId': 43, 'collectionName': 'Invalid', 'feedUrl': 'file:///etc/passwd'}]}))
         mapping['https://itunes.apple.com/search?media=podcast&entity=podcast&limit=20&country=DE&term=Example%20Show'] = str(provider)
+        install_ard(FIXTURES, mapping)
         Path(os.environ['TC_PODCAST_FIXTURES']).write_text(json.dumps(mapping))
         feed([1, 2, 3])
 
@@ -111,6 +115,73 @@ class PodcastAPI(unittest.TestCase):
             time.sleep(.1)
         self.fail(f'Timeout: {current}')
 
+    def test_ard_preparation_and_trim_identity(self):
+        config = dict(self.config('0000000000000009'), sourceType='ard_audiothek', feedUrl='', ardShowUrl=SHOW_URL,
+                      episodeCount=2, episodeTrimSourceKey='ard:' + CORE_ID,
+                      episodeTrims=[dict(identity='urn:ard:episode:newer', trimStartSeconds=0, trimEndSeconds=0)])
+        saved = request('subscriptions/save', config, status=201)['subscription']
+        page = FIXTURES / 'ard-page-50.json'; original = page.read_text()
+        try:
+            ready = self.wait(saved)
+            self.assertEqual([e['identity'] for e in ready['episodes']], ['urn:ard:episode:newer', 'urn:ard:episode:older'])
+            # Legacy update fields must preserve an ARD source and its overrides.
+            saved = request('subscriptions/save', dict(self.config(saved['ruid']), episodeCount=2, id=saved['id'], expectedRevision=saved['revision']))['subscription']
+            self.assertEqual(saved['sourceType'], 'ard_audiothek')
+            self.assertEqual(len(saved['episodeTrims']), 1)
+            self.wait(saved)
+            saved = request('subscriptions/save', dict(saved, expectedRevision=saved['revision'], ardShowUrl='https://ardaudiothek.de/sendung/example/23667030/'))['subscription']
+            self.assertEqual(len(saved['episodeTrims']), 1)
+            self.wait(saved)
+            data = json.loads(page.read_text())
+            url = 'https://podcasts.example.org/2.wav?v=2'
+            data['data']['programSet']['items']['nodes'][1]['audios'][0]['downloadUrl'] = url
+            page.write_text(json.dumps(data))
+            mapping_path = Path(os.environ['TC_PODCAST_FIXTURES'])
+            mapping = json.loads(mapping_path.read_text()); mapping[url] = str(FIXTURES/'2.wav')
+            mapping_path.write_text(json.dumps(mapping))
+            request('subscriptions/refresh', {'id':saved['id']}, status=202)
+            current = self.wait(saved)
+            self.assertGreater(current['audioId'], ready['audioId'])
+            self.assertEqual(current['episodes'][0]['identity'], 'urn:ard:episode:newer')
+            self.assertEqual(current['episodes'][0]['trimStartSeconds'], 0)
+        finally:
+            page.write_text(original)
+            request('subscriptions/detach', {'id':saved['id'], 'expectedRevision':saved['revision']})
+
+    def test_ard_show_selection_and_source_identity(self):
+        from urllib.parse import quote
+        result = request('search', query='?q=' + quote('ARD "&ä') + '&country=DE&provider=ard_audiothek')['results']
+        self.assertEqual(result[0]['providerId'], '23667030')
+        self.assertEqual(result[0]['sourceType'], 'ard_audiothek')
+        config = dict(sourceType='ard_audiothek', ardShowUrl=SHOW_URL, episodeCount=3, order='newest_first')
+        modern = request('preview', config)
+        legacy = request('preview', dict(config, ardShowUrl='https://ardaudiothek.de/sendung/example/23667030/?share=true'))
+        self.assertEqual(modern['sourceKey'], 'ard:' + CORE_ID)
+        self.assertEqual(modern, legacy)
+        self.assertEqual([e['identity'] for e in modern['episodes']], ['urn:ard:episode:newer', 'urn:ard:episode:older'])
+        self.assertTrue(modern['warnings'])
+        request('search', query='?q=Example&provider=wrong', status=400)
+        request('preview', dict(config, ardShowUrl='https://ardsounds.de.evil.org/sendung/x/123'), status=400)
+        path = FIXTURES / 'ard-page-50.json'
+        original = path.read_text()
+        try:
+            path.write_text('{"data":null,"errors":[{"message":"failed"}]}')
+            request('preview', config, status=502)
+            repeated = json.loads((FIXTURES / 'ard-page-0.json').read_text())
+            path.write_text(json.dumps(repeated))
+            request('preview', config, status=502)  # No candidate progress across pages.
+            path.write_text(original)
+            request('preview', dict(config, episodeTrims=[dict(identity='urn:ard:episode:newer', trimStartSeconds=0, trimEndSeconds=0)], episodeTrimSourceKey='ard:another-show'), status=409)
+            reversed_selection = request('preview', dict(config, episodeCount=1, order='oldest_first'))
+            self.assertEqual(reversed_selection['episodes'][0]['identity'], 'urn:ard:episode:newer')
+            data = json.loads(original)
+            data['data']['programSet']['items']['nodes'][1]['assetId'] = ''
+            data['data']['programSet']['items']['nodes'] = data['data']['programSet']['items']['nodes'][:2]
+            path.write_text(json.dumps(data))
+            self.assertEqual(request('preview', config)['episodes'][0]['identity'], 'ard-item:newer')
+        finally:
+            path.write_text(original)
+
     def test_capabilities_and_validation(self):
         self.assertTrue(request('capabilities')['supported'])
         self.assertEqual(request('subscriptions')['subscriptions'], [])
@@ -122,7 +193,7 @@ class PodcastAPI(unittest.TestCase):
         request('subscriptions/save', dict(self.config('0000000000000001'), intervalHours=-1), status=400)
         request('subscriptions/save', dict(self.config('0000000000000001'), intervalHours=1.5), status=400)
         request('subscriptions/save', dict(self.config('0000000000000001'), refreshOnPlacement='true'), status=400)
-        request('subscriptions/save', {'padding': 'x' * 17000}, status=413)
+        request('subscriptions/save', {'padding': 'x' * 65536}, status=413)
 
     def test_discovery_and_manual_feed_fallback(self):
         result = request('search', query='?q=Example%20Show&country=DE')['results']
@@ -274,6 +345,138 @@ class PodcastAPI(unittest.TestCase):
         req = urllib.request.Request(url, data=b'source=', method='POST')
         urllib.request.urlopen(req, timeout=5).read()
         request('subscriptions/detach', {'id': saved['id'], 'expectedRevision': updated['revision']})
+    def test_trim_validation_and_request_boundaries(self):
+        config = self.config('0000000000000008', enabled=False)
+        for value in [-1, 0.5, '3', True, None, 21601]:
+            request('subscriptions/save', dict(config, trimStartSeconds=value), status=400)
+        request('subscriptions/save', dict(config, sourceType='unknown'), status=400)
+        override = dict(identity='i' * 512, trimStartSeconds=0, trimEndSeconds=0)
+        request('subscriptions/save', dict(config, episodeTrims=[override, override]), status=400)
+        for identity in ['a\x00b', 'a\nb', 'a\x7fb']:
+            request('subscriptions/save', dict(config, episodeTrims=[dict(override, identity=identity)]), status=400)
+        request('subscriptions/save', dict(config, episodeTrims=[dict(override, identity='i'*513)]), status=400)
+        request('subscriptions/save', dict(config, episodeTrims=[dict(override, identity=str(i)) for i in range(51)]), status=400)
+        request('subscriptions/save', dict(config, episodeTrims=[override], episodeTrimSourceKey='rss:https://other.example/feed'), status=409)
+        large = dict(config, trimStartSeconds=3, trimEndSeconds=3, episodeTrimSourceKey='rss:' + FEED,
+                     episodeTrims=[dict(override, identity=str(i) + 'x' * 509) for i in range(50)], padding='')
+        large['padding'] = 'x' * (65536 - len(json.dumps(large).encode()))
+        self.assertEqual(len(json.dumps(large).encode()), 65536)
+        saved = request('subscriptions/save', large, status=201)['subscription']
+        self.assertEqual(len(saved['episodeTrims']), 50)
+        legacy = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision']))['subscription']
+        self.assertEqual(legacy['trimStartSeconds'], 3)
+        self.assertEqual(len(legacy['episodeTrims']), 50)
+        request('subscriptions/save', dict(config, id=legacy['id'], expectedRevision=legacy['revision'], feedUrl='https://other.example/feed'), status=409)
+        request('subscriptions/detach', {'id':legacy['id'], 'expectedRevision':legacy['revision']})
+
+    def test_trimming_pcm_signal_and_generation_metadata(self):
+        mapping_path = Path(os.environ['TC_PODCAST_FIXTURES'])
+        mapping = json.loads(mapping_path.read_text())
+        for identity in ['tone-a', 'tone-b']:
+            path = FIXTURES / (identity + '.wav')
+            with wave.open(str(path), 'wb') as audio:
+                audio.setparams((2, 2, 48000, 0, 'NONE', 'not compressed'))
+                for frequency, seconds in [(300, 3), (700, 6), (1100, 3)]:
+                    values = array.array('h')
+                    for i in range(seconds * 48000):
+                        value = int(12000 * math.sin(2 * math.pi * frequency * i / 48000))
+                        values.extend((value, value))
+                    audio.writeframes(values.tobytes())
+            mapping['https://podcasts.example.org/' + identity + '.wav'] = str(path)
+        mapping_path.write_text(json.dumps(mapping))
+        items = ''.join('<item><guid>' + name + '</guid><title>' + name + '</title><duration>1</duration><enclosure type="audio/wav" url="https://podcasts.example.org/' + name + '.wav"/></item>' for name in ['tone-a', 'tone-b'])
+        (FIXTURES / 'feed.xml').write_text('<rss><channel><title>Tones</title>' + items + '</channel></rss>')
+        config = dict(self.config('0000000000000007'), episodeCount=2, trimStartSeconds=3, trimEndSeconds=3,
+                      episodeTrimSourceKey='rss:' + FEED, episodeTrims=[dict(identity='tone-a', trimStartSeconds=0, trimEndSeconds=3)])
+        saved = request('subscriptions/save', config, status=201)['subscription']
+        try:
+            ready = self.wait(saved)
+            self.assertEqual([e['trimmedDurationSeconds'] for e in ready['episodes']], [9, 6])
+            content = SANDBOX / 'data/content/default/00000000/00000007.json'
+            def audio_path():
+                return SANDBOX / 'data/library' / json.loads(content.read_text())['source'][6:]
+            path = audio_path()
+            self.assertEqual(len(taf_header(path)[1]), 2)
+            decoded = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'ogg', '-i', 'pipe:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', 'pipe:1'], input=path.read_bytes()[4096:], stdout=subprocess.PIPE, check=True).stdout
+            pcm = array.array('f'); pcm.frombytes(decoded)
+            self.assertAlmostEqual(len(pcm)/48000, 15, delta=.4)
+            def energy(at, frequency):
+                values = pcm[int(at*48000):int(at*48000)+4800]
+                return sum(v*math.cos(2*math.pi*frequency*i/48000) for i,v in enumerate(values))**2 + sum(v*math.sin(2*math.pi*frequency*i/48000) for i,v in enumerate(values))**2
+            for at, expected in [(1, 300), (5, 700), (12, 700)]:
+                for unwanted in [300, 700, 1100]:
+                    if unwanted != expected: self.assertGreater(energy(at, expected), energy(at, unwanted)*20)
+            # An inactive override changes saved configuration, not prepared bytes.
+            saved = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision'], episodeTrims=config['episodeTrims']+[dict(identity='inactive',trimStartSeconds=9,trimEndSeconds=0)]))['subscription']
+            self.assertEqual(self.wait(saved)['audioId'], ready['audioId'])
+            # End-only and start-only paths both use measured PCM, ignoring metadata.
+            config['trimEndSeconds'] = 0
+            saved = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision']))['subscription']
+            changed = self.wait(saved)
+            self.assertGreater(changed['audioId'], ready['audioId'])
+            self.assertEqual([e['trimmedDurationSeconds'] for e in changed['episodes']], [9, 9])
+            previous_source = json.loads(content.read_text())['source']
+            previous_hash = hashlib.sha1(audio_path().read_bytes()).hexdigest()
+            # Removing an entire episode fails the whole job and preserves applied metadata.
+            saved = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision'], episodeTrims=[dict(identity='tone-a',trimStartSeconds=12,trimEndSeconds=0)]))['subscription']
+            failed = self.wait(saved, 'error')
+            self.assertEqual(json.loads(content.read_text())['source'], previous_source)
+            self.assertEqual(hashlib.sha1(audio_path().read_bytes()).hexdigest(), previous_hash)
+            self.assertEqual(failed['episodes'][0]['trimStartSeconds'], 0)
+            self.assertEqual(failed['episodes'][0]['trimmedDurationSeconds'], 9)
+        finally:
+            request('subscriptions/detach', {'id':saved['id'], 'expectedRevision':saved['revision']})
+            feed([1, 2, 3])
+
+    def test_decoder_partial_frames_failures_and_cancellation(self):
+        control = Path(os.environ['TC_PODCAST_ENCODER_CONTROL'])
+        config = dict(self.config('000000000000000a'), episodeCount=1, trimEndSeconds=1)
+        saved = request('subscriptions/save', dict(config, enabled=False), status=201)['subscription']
+        def mode(value):
+            control.with_suffix('.count').unlink(missing_ok=True)
+            control.write_text(value)
+        try:
+            mode('chunks')
+            saved = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision']))['subscription']
+            prepared = self.wait(saved)
+            self.assertAlmostEqual(prepared['episodes'][0]['trimmedDurationSeconds'], .2, places=4)
+            published = prepared['audioId']
+            for failure in ['fail_second', 'inconsistent', 'partial_frame']:
+                mode(failure)
+                saved = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision'], trimEndSeconds=1, trimStartSeconds=0,
+                    episodeCount=2 if failure != 'inconsistent' else 3))['subscription']
+                failed = self.wait(saved, 'error')
+                self.assertEqual(failed['audioId'], published)
+                self.assertTrue(failed['lastError'])
+            mode('hang')
+            request('subscriptions/refresh', {'id':saved['id']}, status=202)
+            deadline = time.monotonic() + 5
+            pid_path = control.with_suffix('.pid')
+            prior_pid = pid_path.read_text()
+            while time.monotonic() < deadline and pid_path.read_text() == prior_pid:
+                time.sleep(.02)
+            pid = int(pid_path.read_text())
+            saved = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision'], enabled=False))['subscription']
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try: os.kill(pid, 0)
+                except ProcessLookupError: break
+                time.sleep(.02)
+            else: self.fail('Cancelled decoder was not reaped')
+            self.assertEqual(request('subscriptions', query='?ruid='+saved['ruid'])['subscriptions'][0]['audioId'], published)
+        finally:
+            control.unlink(missing_ok=True)
+            request('subscriptions/detach', {'id':saved['id'], 'expectedRevision':saved['revision']})
+
+    def test_y_provider_rate_budgets(self):
+        # The one earlier ARD search is cached and consumes just one upstream slot.
+        for i in range(19):
+            request('search', query='?provider=ard_audiothek&q=Unavailable'+str(i), status=502)
+        request('search', query='?provider=ard_audiothek&q=UnavailableExtra', status=429)
+        request('search', query='?provider=apple&q=StillAvailableBudget', status=502)
+        from urllib.parse import quote
+        self.assertTrue(request('search', query='?provider=ard_audiothek&q='+quote('ARD "&ä'))['results'])
+
     def test_z_restart_and_publication_recovery(self):
         # Replace the helper's server on its own disposable ports/storage.
         os.kill(int(os.environ['TC_SERVER_PID']), signal.SIGTERM)
@@ -334,11 +537,45 @@ class PodcastAPI(unittest.TestCase):
         self.assertEqual(json.loads(content.read_text())['source'], '')
         stop()
         registry = SANDBOX / 'config/podcasts.json'
+        legacy = json.loads(registry.read_text())
+        legacy['version'] = 1
+        for subscription in legacy['subscriptions']:
+            for key in ['sourceType', 'sourceKey', 'ardShowUrl', 'ardShowId', 'trimStartSeconds', 'trimEndSeconds', 'episodeTrims', 'episodeTrimSourceKey']:
+                subscription.pop(key, None)
+        registry.write_text(json.dumps(legacy))
+        migration_backup = registry.with_name('podcasts.json.v1.bak')
+        migration_backup.unlink(missing_ok=True)
+        start()
+        migrated = json.loads(registry.read_text())
+        self.assertEqual(migrated['version'], 2)
+        self.assertEqual(migrated['pins'], legacy['pins'])
+        self.assertEqual(json.loads(migration_backup.read_text()), legacy)
+        self.assertEqual([s['id'] for s in migrated['subscriptions']], [s['id'] for s in legacy['subscriptions']])
+        self.assertTrue(all(s['trimStartSeconds'] == 0 for s in migrated['subscriptions']))
+        if box:
+            status, _, body = box.request('GET', '/v1/content/' + self.pinned_subscription['ruid'], headers={'Range': 'bytes=4096-'})
+            self.assertEqual(status, 206); self.assertEqual(body, self.pinned_audio[4096:])
+        stop()
         registry.write_text('{corrupt')
         start()
         self.assertTrue(list(registry.parent.glob('podcasts.json.corrupt-*')))
         self.assertTrue(request('capabilities')['supported'])
         stop()
+        unknown = json.loads(registry.read_text()); unknown['version'] = 99
+        registry.write_text(json.dumps(unknown))
+        # Unsupported future versions must be preserved, even with an older valid backup.
+        settings = ','.join(['core.tonies_json_auto_update=false', 'core.server.http_port='+os.environ['TC_HTTP_PORT'], 'core.server.https_web_port='+os.environ['TC_HTTPS_WEB_PORT'], 'core.server.https_api_port='+os.environ['TC_HTTPS_API_PORT']])
+        proc = subprocess.Popen([os.environ['TC_SERVER_BIN'], '--base_path', str(SANDBOX), '--config-set', settings], stdout=log, stderr=log)
+        deadline = time.monotonic()+10
+        while time.monotonic()<deadline:
+            try:
+                if not request('capabilities')['supported']: break
+            except Exception: pass
+            time.sleep(.1)
+        else: self.fail('Unknown-version service did not report unavailable')
+        request('preview', self.config('0000000000000001'), status=503)
+        stop()
+        self.assertEqual(json.loads(registry.read_text())['version'], 99)
 
 
 

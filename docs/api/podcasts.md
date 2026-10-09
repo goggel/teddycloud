@@ -2,15 +2,15 @@
 
 All endpoints use the existing web API access controls and web port, not the box
 API port. Bodies/responses are JSON. POST bodies must have Content-Length, fit in
-16 KiB, and be a single object; chunked request bodies are not supported. Overlay
+65,536 bytes (64 KiB), and be a single object; chunked request bodies are not supported. Overlay
 is the existing unique overlay identifier, never an array index. Unknown overlays
 are rejected instead of falling back to the default assignment.
 
 | Method | Path | Input / result |
 | --- | --- | --- |
 | GET | `/api/podcasts/capabilities` | `supported`, episode/interval/body/duration limits |
-| GET | `/api/podcasts/search?q=...&country=DE` | `results: [{providerId,title,author,feedUrl}]` |
-| POST | `/api/podcasts/preview` | `{feedUrl,episodeCount,order}` → title, ordered episodes, warnings |
+| GET | `/api/podcasts/search?q=...&country=DE&provider=apple` | `results` tagged by `sourceType`; provider is `apple` (default) or `ard_audiothek` |
+| POST | `/api/podcasts/preview` | `{sourceType,feedUrl/ardShowUrl,episodeCount,order,...cuts}` → canonical `sourceKey`, title, ordered episodes, warnings |
 | GET | `/api/podcasts/subscriptions?ruid=...&overlay=...` | `subscriptions: [...]`, progress and prepared episodes |
 | POST | `/api/podcasts/subscriptions/save?overlay=...` | config below → subscription and job ID; 201 create/200 update |
 | POST | `/api/podcasts/subscriptions/refresh?overlay=...` | `{id}` → 202 job ID; deduplicated |
@@ -19,7 +19,12 @@ are rejected instead of falling back to the default assignment.
 ```json
 {
   "ruid": "0123456789abcdef",
+  "sourceType": "rss",
   "feedUrl": "https://example.org/podcast.rss",
+  "trimStartSeconds": 0,
+  "trimEndSeconds": 0,
+  "episodeTrimSourceKey": "",
+  "episodeTrims": [],
   "episodeCount": 5,
   "order": "newest_first",
   "intervalHours": 6,
@@ -33,6 +38,35 @@ Edits additionally carry `id` and the revision originally loaded as
 replace the editing revision. Save accepts configuration and queues preparation;
 it does not imply audio is ready. Config changes supersede older jobs. Playback
 orders are `newest_first` and `oldest_first`; both choose the latest N first.
+
+For ARD use `sourceType:"ard_audiothek"`, `ardShowUrl` and an empty `feedUrl`.
+The server resolves numeric/URN show links to `sourceKey:"ard:<coreId>"` and
+`ardShowId`. RSS keys use `rss:<normalized configured feed URL>`; redirects do
+not change the configured identity. Apple results contain numeric `providerId`
+and `feedUrl`; ARD results contain string `providerId`, `ardShowUrl`, `ardShowId`
+and `sourceKey`.
+
+Cuts are integer seconds, 0–21,600. Each `episodeTrims` entry contains a unique,
+nonempty `identity` (up to 512 UTF-8 bytes, no controls) and both
+`trimStartSeconds` and `trimEndSeconds`. At most 50 entries are retained,
+including inactive episodes. Overrides replace both defaults; zero is explicit.
+Nonempty overrides require `episodeTrimSourceKey` equal to the resolved source
+key. A different source returns 409 with `error.code:"trim_source_mismatch"`;
+send `episodeTrims:[]` to explicitly clear. Omitted extension fields on updates
+preserve stored values; omitting `sourceType` cannot convert an ARD subscription
+to RSS. New legacy requests default to RSS and zero cuts.
+
+Preview episodes contain effective cuts, optional upstream `durationSeconds`
+and `estimatedTrimmedDurationSeconds`. Prepared episodes/manifests contain
+applied cuts and measured `trimmedDurationSeconds`. The manifest identifies
+encoder profile `taf-opus-48k-stereo-trim-v2`. The selected identities, URLs,
+effective cuts and canonical source participate in generation fingerprints;
+inactive overrides alone do not regenerate audio. Failed/full-episode cuts
+leave previous prepared metadata intact.
+
+Capabilities include `sourceTypes`, `trimSupported`, `maxTrimSeconds`,
+`maxEpisodeTrims` and `maxRequestBytes`. Older backends omit extension flags;
+clients must hide unsupported controls and omit their fields from requests.
 
 One subscription owns an effective content directory/rUID pair. Shared overlays
 must also share the library directory. On successful preparation the managed

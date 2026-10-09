@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <time.h>
 
 bool podcast_http_init(void)
 {
@@ -159,12 +160,19 @@ static curl_socket_t open_public_socket(void *ctx, curlsocktype purpose, struct 
     return socket(address->family, address->socktype, address->protocol);
 }
 
-bool podcast_http_get(const char *url, size_t limit, const char *file, const atomic_bool *cancel, podcast_response_t *r,
-                      char *error, size_t error_size)
+static long monotonic_ms(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec * 1000L + now.tv_nsec / 1000000;
+}
+bool podcast_http_get_timed(const char *url, size_t limit, const char *file, const atomic_bool *cancel,
+                            podcast_response_t *r, char *error, size_t error_size, long timeout_ms)
 {
     memset(r, 0, sizeof(*r));
     bool success = false;
     char *current = strdup(url);
+    long deadline = monotonic_ms() + timeout_ms;
 #if PODCAST_TESTING
     /* Exact URL mapping in a trusted test-process manifest; no production switch. */
     const char *manifest = getenv("TC_PODCAST_FIXTURES");
@@ -220,6 +228,9 @@ bool podcast_http_get(const char *url, size_t limit, const char *file, const ato
 #endif
     for (unsigned redirect = 0; current && redirect <= 5; redirect++)
     {
+        long remaining = deadline - monotonic_ms();
+        if (remaining <= 0)
+            break;
         CURLU *u = parse_url(current);
         CURL *curl = u ? curl_easy_init() : NULL;
         if (!curl)
@@ -243,8 +254,8 @@ bool podcast_http_get(const char *url, size_t limit, const char *file, const ato
         curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, file ? 900L : 30L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, remaining < 10000 ? remaining : 10000L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, remaining);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
         curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
@@ -291,5 +302,10 @@ bool podcast_http_get(const char *url, size_t limit, const char *file, const ato
             remove(file);
     }
     return success;
+}
+bool podcast_http_get(const char *url, size_t limit, const char *file, const atomic_bool *cancel, podcast_response_t *r,
+                      char *error, size_t error_size)
+{
+    return podcast_http_get_timed(url, limit, file, cancel, r, error, error_size, file ? 900000L : 30000L);
 }
 #endif
