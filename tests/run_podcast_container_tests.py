@@ -102,7 +102,7 @@ def main():
                     time.sleep(.2)
             print(f'Production image smoke/persistence: {"PUID=1000" if nonroot else "root"} passed', flush=True)
         finally:
-            subprocess.run([args.engine, 'rm', '-f', container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([args.engine, 'rm', '-fv', container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for volume in volumes:
                 subprocess.run([args.engine, 'volume', 'rm', volume], check=True, stdout=subprocess.DEVNULL)
     print('Container verification passed')
