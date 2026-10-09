@@ -10,6 +10,7 @@ are rejected instead of falling back to the default assignment.
 | --- | --- | --- |
 | GET | `/api/podcasts/capabilities` | `supported`, episode/interval/body/duration limits |
 | GET | `/api/podcasts/search?q=...&country=DE&provider=apple` | `results` tagged by `sourceType`; provider is `apple` (default) or `ard_audiothek` |
+| POST | `/api/podcasts/feed-info` | `{feedUrl}` → `{videoOnly}`; bounded RSS metadata inspection, no media download or persistence |
 | POST | `/api/podcasts/preview` | `{sourceType,feedUrl/ardShowUrl,episodeCount,order,...cuts}` → canonical `sourceKey`, title, ordered episodes, warnings |
 | GET | `/api/podcasts/subscriptions?ruid=...&overlay=...` | `subscriptions: [...]`, progress and prepared episodes |
 | POST | `/api/podcasts/subscriptions/save?overlay=...` | config below → subscription and job ID; 201 create/200 update |
@@ -65,7 +66,11 @@ inactive overrides alone do not regenerate audio. Failed/full-episode cuts
 leave previous prepared metadata intact.
 
 Capabilities include `sourceTypes`, `trimSupported`, `maxTrimSeconds`,
-`maxEpisodeTrims` and `maxRequestBytes`. Older backends omit extension flags;
+`maxEpisodeTrims`, `maxRequestBytes` and `feedInspectionSupported`. Feed inspection
+shares the preview HTTP/XML safety limits and has a five-second transfer timeout.
+`videoOnly:false` also covers unclassifiable XML; only confirmed video-only RSS
+feeds are hidden. Transfer failures return 502 and leave the result visible.
+Older backends omit extension flags;
 clients must hide unsupported controls and omit their fields from requests.
 
 One subscription owns an effective content directory/rUID pair. Shared overlays
