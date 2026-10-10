@@ -27,6 +27,8 @@
 #include "esp32.h"
 #include "cache.h"
 #include "libraryMeta.h"
+#include "mutex_manager.h"
+#include <ctype.h>
 
 error_t parsePostData(HttpConnection *connection, char_t *post_data, size_t buffer_size)
 {
@@ -4764,6 +4766,40 @@ error_t handleApiContentJsonBase(HttpConnection *connection, const char_t *uri, 
     getContentPathFromCharRUID(ruid, contentPath, client_ctx->settings);
 
     return NO_ERROR;
+}
+
+bool resolveSourceProfileContent(const char *overlay, const char *ruid, char **content_path, settings_t **settings)
+{
+    *content_path = NULL;
+    *settings = NULL;
+    if (!ruid || strlen(ruid) != 16)
+        return false;
+    for (size_t i = 0; i < 16; i++)
+        if (!isxdigit((unsigned char)ruid[i]))
+            return false;
+    mutex_lock(MUTEX_SETTINGS);
+    if (!overlay || !*overlay)
+        *settings = get_settings();
+    else
+        for (unsigned i = 0; i < MAX_OVERLAYS; i++)
+        {
+            settings_t *candidate = get_settings_id(i);
+            if (candidate->internal.config_used && candidate->internal.overlayUniqueId &&
+                !strcmp(candidate->internal.overlayUniqueId, overlay))
+            {
+                *settings = candidate;
+                break;
+            }
+        }
+    if (*settings && (*settings)->internal.contentdirfull && fsDirExists((*settings)->internal.contentdirfull))
+    {
+        char normalized[17];
+        memcpy(normalized, ruid, 16);
+        normalized[16] = 0;
+        getContentPathFromCharRUID(normalized, content_path, *settings);
+    }
+    mutex_unlock(MUTEX_SETTINGS);
+    return *content_path != NULL;
 }
 error_t handleApiContentJsonGet(HttpConnection *connection, const char_t *uri, const char_t *queryString, client_ctx_t *client_ctx)
 {

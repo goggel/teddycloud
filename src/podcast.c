@@ -1,12 +1,12 @@
 #include "podcast.h"
 #include "server_helpers.h"
+#include "mutex_manager.h"
 #if PODCAST_SUPPORT
 #include "podcast_feed.h"
 #include "podcast_http.h"
 #include "podcast_encode.h"
 #include "podcast_ard.h"
 #include "podcast_trim.h"
-#include "mutex_manager.h"
 #include "toniefile.h"
 #include "hash/sha256.h"
 #include "fs_ext.h"
@@ -67,7 +67,6 @@ static void publication_boundary(const char *boundary)
 /* Content -> service is the only nested lock order. Network/encoding never
  * holds either. JSON trees never escape the service lock without deep copying. */
 static pthread_mutex_t service_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t content_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t discovery_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
 static pthread_t worker;
@@ -88,12 +87,12 @@ static unsigned search_requests[2];
 void podcast_content_lock(const char *path)
 {
     (void)path;
-    pthread_mutex_lock(&content_lock);
+    mutex_lock(MUTEX_CONTENT_JSON);
 }
 void podcast_content_unlock(const char *path)
 {
     (void)path;
-    pthread_mutex_unlock(&content_lock);
+    mutex_unlock(MUTEX_CONTENT_JSON);
 }
 static void str(cJSON *o, const char *k, const char *v)
 {
@@ -265,7 +264,8 @@ static bool legacy_config_valid(const cJSON *s)
            cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(s, "intervalHours")) && h >= 0 && h <= 168 &&
            floor(h) == h && (!strcmp(order, "newest_first") || !strcmp(order, "oldest_first")) &&
            cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(s, "enabled")) &&
-           cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(s, "refreshOnPlacement"));
+           (!cJSON_GetObjectItemCaseSensitive(s, "refreshOnPlacement") ||
+            cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(s, "refreshOnPlacement")));
 }
 static bool valid_registry(cJSON *o)
 {
@@ -318,11 +318,37 @@ static bool persist(void)
 static cJSON *public_subscription(cJSON *s)
 {
     cJSON *copy = cJSON_Duplicate(s, true);
+    if (strcmp(podcast_string(copy, "displayNameSourceKey"), podcast_string(copy, "sourceKey")))
+    {
+        str(copy, "displayName", "");
+        str(copy, "displayNameSourceKey", "");
+    }
     const char *private_keys[] = {"scope",         "library",  "original", "pending",         "fingerprint",
                                   "lastPlacement", "failures", "job",      "publishedSource", NULL};
     for (unsigned i = 0; private_keys[i]; i++)
         cJSON_DeleteItemFromObjectCaseSensitive(copy, private_keys[i]);
     return copy;
+}
+static void display_name_from_feed(cJSON *subscription, const cJSON *feed)
+{
+    const char *title = podcast_string(feed, "title");
+    const char *key = podcast_string(feed, "sourceKey");
+    if (*title && *key && !strcmp(key, podcast_string(subscription, "sourceKey")))
+    {
+        char bounded[513];
+        size_t size = strlen(title);
+        if (size > 512)
+        {
+            size = 512;
+            while (size && ((unsigned char)title[size] & 0xc0) == 0x80) size--;
+        }
+        memcpy(bounded, title, size);
+        bounded[size] = 0;
+        for (size_t i = 0; i < size; i++)
+            if ((unsigned char)bounded[i] < 32 || (unsigned char)bounded[i] == 127) bounded[i] = ' ';
+        str(subscription, "displayName", bounded);
+        str(subscription, "displayNameSourceKey", key);
+    }
 }
 static unsigned queued_count(void)
 {
@@ -372,6 +398,9 @@ static cJSON *preview(const cJSON *body, const atomic_bool *cancel, char *error,
 static cJSON *normalize_config(const cJSON *input, const cJSON *prior, bool is_preview, int *status)
 {
     cJSON *body = cJSON_Duplicate(input, true);
+    char *requested_ard = NULL, *resolved_title = NULL;
+    bool supplied_name = cJSON_GetObjectItemCaseSensitive(input, "displayName") != NULL;
+    bool trim_mismatch = false;
     const char *fields[] = {"sourceType",           "ardShowUrl", "trimStartSeconds", "trimEndSeconds", "episodeTrims",
                             "episodeTrimSourceKey", NULL};
     for (unsigned i = 0; fields[i]; i++)
@@ -390,8 +419,6 @@ static cJSON *normalize_config(const cJSON *input, const cJSON *prior, bool is_p
             num(body, "intervalHours", 0);
         if (!cJSON_GetObjectItemCaseSensitive(body, "enabled"))
             boolean(body, "enabled", true);
-        if (!cJSON_GetObjectItemCaseSensitive(body, "refreshOnPlacement"))
-            boolean(body, "refreshOnPlacement", false);
     }
     char error[256];
     if (!podcast_config_valid(body, error, sizeof(error)))
@@ -399,10 +426,15 @@ static cJSON *normalize_config(const cJSON *input, const cJSON *prior, bool is_p
         *status = 400;
         goto fail;
     }
+    boolean(body, "refreshOnPlacement", true);
+    requested_ard = strdup(podcast_string(body, "ardShowUrl"));
     if (!strcmp(podcast_string(body, "sourceType"), "ard_audiothek"))
     {
         if (is_preview)
+        {
+            free(requested_ard);
             return body;
+        }
         cJSON *source = podcast_ard_resolve(podcast_string(body, "ardShowUrl"), &stopping, error, sizeof(error));
         if (!source)
         {
@@ -412,6 +444,7 @@ static cJSON *normalize_config(const cJSON *input, const cJSON *prior, bool is_p
         str(body, "sourceKey", podcast_string(source, "sourceKey"));
         str(body, "ardShowId", podcast_string(source, "ardShowId"));
         str(body, "ardShowUrl", podcast_string(source, "ardShowUrl"));
+        resolved_title = strdup(podcast_string(source, "title"));
         cJSON_Delete(source);
         str(body, "feedUrl", "");
     }
@@ -437,10 +470,33 @@ static cJSON *normalize_config(const cJSON *input, const cJSON *prior, bool is_p
         str(body, "ardShowUrl", "");
         str(body, "ardShowId", "");
     }
+    if (!is_preview)
+    {
+        const char *key = podcast_string(body, "sourceKey");
+        const char *requested_key = podcast_string(body, "displayNameSourceKey");
+        const char *requested_name = podcast_string(body, "displayName");
+        if (supplied_name && *requested_name && strcmp(requested_key, key) &&
+            (strcmp(podcast_string(body, "sourceType"), "ard_audiothek") ||
+             strcmp(requested_key, requested_ard)))
+        {
+            *status = 409;
+            snprintf(error, sizeof(error), "Display name belongs to a different source");
+            goto fail;
+        }
+        char *name = strdup(supplied_name ? requested_name :
+                            prior && !strcmp(key, podcast_string(prior, "sourceKey")) &&
+                            !strcmp(key, podcast_string(prior, "displayNameSourceKey")) ?
+                            podcast_string(prior, "displayName") : "");
+        if (resolved_title && *resolved_title) { free(name); name = strdup(resolved_title); }
+        str(body, "displayName", name);
+        str(body, "displayNameSourceKey", *name ? key : "");
+        free(name);
+    }
     if (cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(body, "episodeTrims")))
     {
         if (strcmp(podcast_string(body, "episodeTrimSourceKey"), podcast_string(body, "sourceKey")))
         {
+            trim_mismatch = true;
             *status = 409;
             snprintf(error, sizeof(error),
                      "Episode overrides belong to a different source; explicitly clear them before changing source");
@@ -449,11 +505,15 @@ static cJSON *normalize_config(const cJSON *input, const cJSON *prior, bool is_p
     }
     else
         str(body, "episodeTrimSourceKey", "");
+    free(requested_ard);
+    free(resolved_title);
     return body;
 fail:
+    free(requested_ard);
+    free(resolved_title);
     cJSON_Delete(body);
     cJSON *result = failure(status, *status, error);
-    if (*status == 409)
+    if (trim_mismatch)
         str(cJSON_GetObjectItemCaseSensitive(result, "error"), "code", "trim_source_mismatch");
     return result;
 }
@@ -753,6 +813,7 @@ static void prepare(cJSON *job)
                     str(s, "publishedSource", source);
                     str(s, "fingerprint", podcast_string(job, "fingerprint"));
                     str(s, "title", podcast_string(feed, "title"));
+                    display_name_from_feed(s, feed);
                     num(s, "audioId", audio_id);
                     cJSON_DeleteItemFromObjectCaseSensitive(s, "episodes");
                     cJSON_AddItemToObject(s, "episodes", cJSON_Duplicate(episodes, true));
@@ -801,7 +862,10 @@ done:
             unsigned hours = podcast_number(saved, "intervalHours");
             num(saved, "nextCheckAt", hours ? now + hours * 3600 : 0);
             if (unchanged && feed)
-                str(saved, "title", podcast_string(feed, "title"));
+            {
+                if (*podcast_string(feed, "title")) str(saved, "title", podcast_string(feed, "title"));
+                display_name_from_feed(saved, feed);
+            }
         }
         else
         {
@@ -954,6 +1018,7 @@ static void recover(void)
                     str(s, "fingerprint", podcast_string(pending, "fingerprint"));
                     cJSON *feed = cJSON_GetObjectItemCaseSensitive(pending, "feed");
                     str(s, "title", podcast_string(feed, "title"));
+                    display_name_from_feed(s, feed);
                     num(s, "audioId", podcast_number(pending, "audioId"));
                     cJSON_DeleteItemFromObjectCaseSensitive(s, "episodes");
                     cJSON_AddItemToObject(s, "episodes",
@@ -973,6 +1038,39 @@ static void recover(void)
                                   !strcmp(state, "encoding") || !strcmp(state, "queued")))
             enqueue(s);
     }
+}
+static bool hydrate_prepared_names(void)
+{
+    bool changed = false;
+    cJSON *s;
+    cJSON_ArrayForEach(s, subscriptions())
+    {
+        if (*podcast_string(s, "displayName")) continue;
+        const char *id = podcast_string(s, "id");
+        const char *published = podcast_string(s, "publishedSource");
+        char *prefix = custom_asprintf("lib://podcasts/%s/", id);
+        size_t prefix_len = strlen(prefix);
+        const char *filename = published + (strlen(published) < prefix_len ? strlen(published) : prefix_len);
+        bool valid = !strncmp(published, prefix, prefix_len) && strlen(filename) == 12 &&
+                     !strcmp(filename + 8, ".taf");
+        for (size_t i = 0; valid && i < 8; i++)
+            if (!isxdigit((unsigned char)filename[i])) valid = false;
+        if (valid)
+        {
+            char *path = custom_asprintf("%s/podcasts/%s/%s.json", podcast_string(s, "library"), id, filename);
+            cJSON *manifest = read_json(path);
+            if (manifest && *podcast_string(manifest, "title") &&
+                !strcmp(podcast_string(manifest, "sourceKey"), podcast_string(s, "sourceKey")))
+            {
+                display_name_from_feed(s, manifest);
+                changed = true;
+            }
+            cJSON_Delete(manifest);
+            free(path);
+        }
+        free(prefix);
+    }
+    return changed;
 }
 void podcast_init(void)
 {
@@ -1062,6 +1160,27 @@ void podcast_init(void)
     cJSON_Delete(legacy);
     if (available)
     {
+        bool policy_changed = false;
+        cJSON *s;
+        cJSON_ArrayForEach(s, subscriptions())
+            if (!yes(s, "refreshOnPlacement"))
+            {
+                boolean(s, "refreshOnPlacement", true);
+                policy_changed = true;
+            }
+        if (policy_changed && !persist())
+        {
+            damaged = true;
+            available = false;
+        }
+    }
+    if (available && hydrate_prepared_names() && !persist())
+    {
+        damaged = true;
+        available = false;
+    }
+    if (available)
+    {
         if (pthread_create(&worker, NULL, work, NULL) == 0)
             started = true;
         else
@@ -1128,7 +1247,7 @@ void podcast_placed(settings_t *settings, uint64_t uid)
     if (available)
     {
         cJSON *s;
-        cJSON_ArrayForEach(s, subscriptions()) if (yes(s, "enabled") && yes(s, "refreshOnPlacement") &&
+        cJSON_ArrayForEach(s, subscriptions()) if (yes(s, "enabled") &&
                                                    !strcmp(root, podcast_string(s, "scope")) &&
                                                    !strcmp(ruid, podcast_string(s, "ruid")) &&
                                                    podcast_now() - podcast_number(s, "lastPlacement") >= 900)
@@ -1258,6 +1377,8 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
         num(o, "maxTrimSeconds", 21600);
         num(o, "maxEpisodeTrims", 50);
         boolean(o, "trimSupported", true);
+        boolean(o, "displayNameSupported", true);
+        boolean(o, "placementRefreshAlways", true);
         boolean(o, "feedInspectionSupported", true);
         cJSON *types = cJSON_AddArrayToObject(o, "sourceTypes");
         cJSON_AddItemToArray(types, cJSON_CreateString("rss"));
@@ -1465,6 +1586,8 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
                               "order",
                               "intervalHours",
                               "refreshOnPlacement",
+                              "displayName",
+                              "displayNameSourceKey",
                               "enabled",
                               NULL};
         for (unsigned i = 0; keys[i]; i++)
@@ -1696,10 +1819,12 @@ void podcast_placed(settings_t *settings, uint64_t uid)
 void podcast_content_lock(const char *path)
 {
     (void)path;
+    mutex_lock(MUTEX_CONTENT_JSON);
 }
 void podcast_content_unlock(const char *path)
 {
     (void)path;
+    mutex_unlock(MUTEX_CONTENT_JSON);
 }
 void podcast_source_changed(const char *path, const char *source)
 {
