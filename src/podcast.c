@@ -315,9 +315,19 @@ static bool persist(void)
     return ok;
 }
 
-static cJSON *public_subscription(cJSON *s)
+static cJSON *public_subscription(cJSON *s, const char *assigned_source)
 {
     cJSON *copy = cJSON_Duplicate(s, true);
+    if (assigned_source)
+    {
+        const char *published = podcast_string(s, "publishedSource");
+        cJSON *original = cJSON_GetObjectItemCaseSensitive(s, "original");
+        bool owns = *published ? !strcmp(assigned_source, published)
+                               : yes(s, "enabled") &&
+                                     (yes(s, "job") || !strcmp(running_id, podcast_string(s, "id"))) &&
+                                     !strcmp(assigned_source, podcast_string(original, "source"));
+        boolean(copy, "ownsAssignment", owns);
+    }
     if (strcmp(podcast_string(copy, "displayNameSourceKey"), podcast_string(copy, "sourceKey")))
     {
         str(copy, "displayName", "");
@@ -853,6 +863,10 @@ done:
     {
         time_t now = podcast_now();
         num(saved, "lastCheckedAt", now);
+        /* A successful feed lookup names the requested source even if a later
+         * download or encode fails. The prepared title remains unchanged. */
+        if (feed)
+            display_name_from_feed(saved, feed);
         if (ok)
         {
             str(saved, "state", "ready");
@@ -1465,8 +1479,15 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
             path = content_path(root, podcast_string(s, "ruid"));
         pthread_mutex_unlock(&service_lock);
     }
+    char *assigned_source = NULL;
     if (path)
+    {
         podcast_content_lock(path);
+        contentJson_t content;
+        if (load_content_json(path, &content, false, get_settings_ovl(overlay ? overlay : "")) == NO_ERROR)
+            assigned_source = strdup(content.source ? content.source : "");
+        free_content_json(&content);
+    }
     pthread_mutex_lock(&service_lock);
     cJSON *result = NULL, *s = *id ? find(id) : NULL, *backup = NULL;
     if (!strcmp(action, "subscriptions"))
@@ -1476,7 +1497,7 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
         cJSON_ArrayForEach(entry,
                            subscriptions()) if (!strcmp(root, podcast_string(entry, "scope")) &&
                                                 (!*normalized || !strcmp(normalized, podcast_string(entry, "ruid"))))
-            cJSON_AddItemToArray(list, public_subscription(entry));
+            cJSON_AddItemToArray(list, public_subscription(entry, assigned_source));
         goto out;
     }
     if (!save && !detach && !refresh)
@@ -1603,7 +1624,7 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
         if (yes(s, "enabled"))
             enqueue(s);
         result = cJSON_CreateObject();
-        cJSON_AddItemToObject(result, "subscription", public_subscription(s));
+        cJSON_AddItemToObject(result, "subscription", public_subscription(s, assigned_source));
     }
     else if (refresh)
     {
@@ -1664,6 +1685,7 @@ out:
     pthread_mutex_unlock(&service_lock);
     if (path)
         podcast_content_unlock(path);
+    free(assigned_source);
     free(path);
     free(root);
     free(library);
