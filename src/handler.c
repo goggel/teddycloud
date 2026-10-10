@@ -3,6 +3,7 @@
 #include "server_helpers.h"
 #include "fs_ext.h"
 #include "mutex_manager.h"
+#include "podcast.h"
 #include "cJSON.h"
 #include "mqtt_server.h"
 
@@ -927,6 +928,7 @@ tonie_info_t *getTonieInfoV2(const char *contentPath, bool lock, bool force_taf_
     tonieInfo->jsonPath = custom_asprintf("%s.json", contentPath);
     tonieInfo->exists = false;
     tonieInfo->locked = false;
+    tonieInfo->settings = settings;
     osMemset(&tonieInfo->json, 0, sizeof(contentJson_t));
     osMemset(&tonieInfo->additional, 0, sizeof(tonie_info_additional_t));
 
@@ -941,8 +943,10 @@ tonie_info_t *getTonieInfoV2(const char *contentPath, bool lock, bool force_taf_
             (contentPath[osStrlen(settings->internal.contentdirfull)] == '/' || contentPath[osStrlen(settings->internal.contentdirfull)] == '\\') &&
             osStrlen(contentPath) - 18 == osStrlen(settings->internal.contentdirfull))
         {
+            podcast_content_lock(contentPath);
             // TODO: Nice checking if valid tonie path
             load_content_json(contentPath, &tonieInfo->json, true, settings);
+            podcast_content_unlock(contentPath);
         }
 
         if (tonieInfo->json._source_type == CT_SOURCE_TAF || tonieInfo->json._source_type == CT_SOURCE_TAP_CACHED)
@@ -1027,7 +1031,31 @@ void saveTonieInfo(tonie_info_t *tonieInfo, bool unlock)
 {
     if (tonieInfo->json._updated && tonieInfo->json._create_if_missing)
     {
-        save_content_json(tonieInfo->jsonPath, &tonieInfo->json);
+#if PODCAST_TESTING
+        /* Test-only synchronization for a stale legacy metadata writer. */
+        char *pause = custom_asprintf("%s.pause-before-save", tonieInfo->jsonPath);
+        if (pause && fsFileExists(pause))
+        {
+            char *ready = custom_asprintf("%s.pause-ready", tonieInfo->jsonPath);
+            char *release = custom_asprintf("%s.pause-release", tonieInfo->jsonPath);
+            FsFile *signal = ready ? fsOpenFile(ready, FS_FILE_MODE_WRITE) : NULL;
+            if (signal) fsCloseFile(signal);
+            for (unsigned elapsed = 0; release && elapsed < 5000 && !fsFileExists(release); elapsed += 10)
+                osDelayTask(10);
+            osFreeMem(ready);
+            osFreeMem(release);
+        }
+        osFreeMem(pause);
+#endif
+        error_t error = save_content_json_legacy(tonieInfo->jsonPath, &tonieInfo->json, tonieInfo->settings);
+        if (error != NO_ERROR)
+        {
+            TRACE_WARNING("Legacy metadata update conflicted or failed for %s: %s\r\n",
+                          tonieInfo->jsonPath, error2text(error));
+        }
+        /* freeTonieInfo may follow an explicit save; never retry a conflict
+         * with the same stale snapshot. */
+        tonieInfo->json._updated = false;
     }
     if (tonieInfo->locked && unlock)
     {
@@ -1233,7 +1261,6 @@ error_t moveTAF2Lib(tonie_info_t *tonieInfo, settings_t *settings, bool_t rootDi
                 if (!osMemcmp(tonieInfoLib->tafHeader->sha1_hash.data, tonieInfo->tafHeader->sha1_hash.data, tonieInfoLib->tafHeader->sha1_hash.len))
                 {
                     TRACE_WARNING(">> SHA1 Hash for Audio ID %" PRIu32 ", already in library, deleting source file\r\n", audioId);
-                    fsDeleteFile(tonieInfo->contentPath);
                     skipMove = true;
                 }
                 else
@@ -1245,17 +1272,14 @@ error_t moveTAF2Lib(tonie_info_t *tonieInfo, settings_t *settings, bool_t rootDi
             }
             if (moveToLibrary)
             {
-                if (!skipMove)
-                {
-                    error = fsMoveFile(tonieInfo->contentPath, libraryPath, false);
-                }
+                size_t jsonPathLen = osStrlen(tonieInfo->jsonPath);
+                char *assignmentPath = jsonPathLen > 5 ? custom_asprintf("%.*s", (int)(jsonPathLen - 5), tonieInfo->jsonPath) : NULL;
+                error = assignmentPath ? move_content_json_source(assignmentPath, tonieInfo->json.source,
+                                libraryShortPath, tonieInfo->contentPath, libraryPath, skipMove, settings) : ERROR_INVALID_PARAMETER;
+                osFreeMem(assignmentPath);
                 if (error == NO_ERROR)
                 {
-
-                    free(tonieInfo->json.source);
-                    tonieInfo->json.source = strdup(libraryShortPath);
-
-                    save_content_json(tonieInfo->jsonPath, &tonieInfo->json);
+                    tonieInfo->json._updated = false;
                     TRACE_INFO(">> Successfully set to library %s\r\n", libraryShortPath);
                 }
                 else

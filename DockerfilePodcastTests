@@ -12,14 +12,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /buildenv
 COPY . .
-# Tests remain runnable in the finished test image. Neither Node nor Python is
-# added to production runtime images.
+# Frontend checks run in the frontend stage; the finished image retains the
+# built UI and backend test dependencies without duplicating node_modules.
 COPY --from=frontend /usr/local/ /usr/local/
-COPY --from=frontend /frontend/node_modules/ teddycloud_web/node_modules/
 COPY --from=frontend /frontend/dist/ contrib/data/www/web/
 RUN make build NO_SANITIZERS=1 -j4 && make test_podcast
 RUN make build PODCAST_SUPPORT=0 BIN_DIR=bin/podcast-disabled NO_SANITIZERS=1 -j4 \
     && ! ldd bin/podcast-disabled/teddycloud | grep -E 'lib(curl|xml2)'
 RUN TC_SERVER_BIN=/buildenv/bin/podcast-disabled/teddycloud bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_podcast_disabled.py
 RUN TC_SERVER_BIN=/buildenv/bin/podcast-disabled/teddycloud bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_source_profiles.py
+RUN make build PODCAST_SUPPORT=0 PODCAST_TESTING=1 BIN_DIR=bin/podcast-disabled-test NO_SANITIZERS=1 -j4 \
+    && TC_SERVER_BIN=/buildenv/bin/podcast-disabled-test/teddycloud TC_LEGACY_RACE_TESTING=1 \
+       bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_source_profiles.py
 CMD ["make", "test_podcast"]

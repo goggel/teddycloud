@@ -4382,27 +4382,11 @@ static error_t updateContentJsonFilesForRename(const char *fromModel, const char
                 }
             }
 
-            contentJson_t contentJson = {0};
-            error_t loadErr = load_content_json(contentPath, &contentJson, false, settings);
-            if (loadErr == NO_ERROR && contentJson._valid && contentJson.tonie_model != NULL)
+            error_t rename_error = rename_content_json_model(contentPath, fromModel, toModel, settings);
+            if (rename_error != NO_ERROR && rename_error != ERROR_FILE_NOT_FOUND)
             {
-                if (osStrlen(contentJson.tonie_model) > 0 && osStrcasecmp(contentJson.tonie_model, fromModel) == 0)
-                {
-                    osFreeMem(contentJson.tonie_model);
-                    contentJson.tonie_model = strdup(toModel);
-                    if (contentJson.tonie_model != NULL)
-                    {
-                        contentJson._updated = true;
-                        char *jsonPath = custom_asprintf("%s.json", contentPath);
-                        if (jsonPath != NULL)
-                        {
-                            save_content_json(jsonPath, &contentJson);
-                            osFreeMem(jsonPath);
-                        }
-                    }
-                }
+                TRACE_WARNING("Content model rename failed for %s: %s\r\n", contentPath, error2text(rename_error));
             }
-            free_content_json(&contentJson);
             osFreeMem(contentPath);
         }
         fsCloseDir(subDir);
