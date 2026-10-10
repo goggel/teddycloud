@@ -14,4 +14,4 @@ export PATH="$fixture_dir/tools:$PATH"
 date +%s > "$TC_PODCAST_CLOCK"
 echo '{}' > "$TC_PODCAST_FIXTURES"
 bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_podcast_api.py "$@"
-bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_source_profiles.py
+TC_LEGACY_RACE_TESTING=1 bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_source_profiles.py

@@ -459,6 +459,13 @@ class PodcastAPI(unittest.TestCase):
             self.assertNotEqual(saved['displayName'], 'Search result title')
             self.assertEqual(saved['displayNameSourceKey'], saved['sourceKey'])
             self.assertEqual(saved.get('title', ''), '')
+            alternate = 'https://ardaudiothek.de/sendung/example/23667030/?share=true'
+            saved = request('subscriptions/save', dict(
+                self.config(ruid, False), sourceType='ard_audiothek', feedUrl='',
+                ardShowUrl=alternate, id=saved['id'], expectedRevision=saved['revision']))['subscription']
+            self.assertEqual(saved['sourceKey'], 'ard:' + CORE_ID)
+            self.assertEqual(saved['displayNameSourceKey'], saved['sourceKey'])
+            self.assertTrue(saved['displayName'])
         finally:
             request('subscriptions/detach', {'id': saved['id'], 'expectedRevision': saved['revision']})
 
@@ -528,14 +535,21 @@ class PodcastAPI(unittest.TestCase):
         mapping['https://podcasts.example.org/5.wav'] = str(invalid)
         mapping_path.write_text(json.dumps(mapping))
         feed([2, 3, 4, 5])
+        feed_path = FIXTURES / 'feed.xml'
+        feed_path.write_text(feed_path.read_text().replace('<title>Test podcast</title>',
+                                                         '<title>Fetched before encode failure</title>'))
         request('subscriptions/refresh', {'id': saved['id']}, status=202)
-        self.wait(saved, 'error')
+        failed = self.wait(saved, 'error')
+        self.assertEqual(failed['displayName'], 'Fetched before encode failure')
+        self.assertEqual(failed['title'], newer['title'])
         self.assertEqual(json.loads(content.read_text())['source'], updated_source)
         self.assertEqual(taf_header(SANDBOX / 'data/library' / updated_source[6:])[0], newer['audioId'])
         # Failed XML fetch must leave the completed assignment playable.
         (FIXTURES / 'feed.xml').write_text('<broken')
         request('subscriptions/refresh', {'id': saved['id']}, status=202)
-        self.wait(saved, 'error')
+        after_fetch_error = self.wait(saved, 'error')
+        self.assertEqual(after_fetch_error['displayName'], 'Fetched before encode failure')
+        self.assertEqual(after_fetch_error['title'], newer['title'])
         self.assertEqual(json.loads(content.read_text())['source'], updated_source)
         self.assertTrue(audio.exists())  # previous generation retained
         request('subscriptions/detach', {'id': saved['id'], 'expectedRevision': saved['revision']})
