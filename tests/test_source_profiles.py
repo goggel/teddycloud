@@ -37,6 +37,71 @@ class SourceProfilesAPI(unittest.TestCase):
         return request('/api/source-profiles/save',
                        dict(ruid=ruid, kind=kind, expectedRevision=revision, profile=profile), status)
 
+    def test_legacy_metadata_save_cannot_erase_new_profiles(self):
+        if os.environ.get('TC_LEGACY_RACE_TESTING') != '1':
+            self.skipTest('requires PODCAST_TESTING=1 server fixture')
+        for suffix, scenario in [('b1', 'new_profile'), ('b2', 'unknown'),
+                                 ('b3', 'source_replaced'), ('b4', 'corrupt')]:
+            with self.subTest(scenario=scenario):
+                ruid = '00000000000000' + suffix
+                path = self.path(ruid)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                original = {'_version': 5, 'source': 'https://example.org/legacy-stream',
+                            'live': False, 'nocloud': False, 'hide': False}
+                path.write_text(json.dumps(original))
+                pause = Path(str(path) + '.pause-before-save')
+                ready = Path(str(path) + '.pause-ready')
+                release = Path(str(path) + '.pause-release')
+                pause.touch()
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        pending = pool.submit(request, '/api/getTagInfo?ruid=' + ruid)
+                        deadline = time.monotonic() + 5
+                        while not ready.exists() and time.monotonic() < deadline:
+                            time.sleep(.01)
+                        self.assertTrue(ready.exists(), 'legacy save did not reach fixture pause')
+                        if scenario == 'unknown':
+                            updated = dict(original, sourceProfilesVersion=987,
+                                           sourceProfilesRevision=4,
+                                           sourceProfiles={'future': {'opaque': [1, {'value': 'retained'}]}})
+                            path.write_text(json.dumps(updated))
+                        elif scenario == 'source_replaced':
+                            path.write_text(json.dumps(dict(original, source='lib://newer.taf',
+                                                            live=False, nocloud=False,
+                                                            cloud_override=True)))
+                        elif scenario == 'corrupt':
+                            path.write_text('{"_version":5,"sourceProfiles":')
+                        else:
+                            self.save(ruid, 'audio', 0, {'source': 'lib://saved-while-paused.taf'})
+                        release.touch()
+                        pending.result(timeout=10)
+                    if scenario == 'corrupt':
+                        self.assertEqual(path.read_text(), '{"_version":5,"sourceProfiles":')
+                        continue
+                    stored = json.loads(path.read_text())
+                    if scenario == 'source_replaced':
+                        self.assertEqual(stored['source'], 'lib://newer.taf')
+                        self.assertFalse(stored['live'])
+                        self.assertFalse(stored['nocloud'])
+                        self.assertTrue(stored['cloud_override'])
+                    else:
+                        self.assertTrue(stored['live'])
+                        self.assertTrue(stored['nocloud'])
+                    if scenario == 'unknown':
+                        self.assertEqual(stored['sourceProfilesVersion'], 987)
+                        self.assertEqual(stored['sourceProfilesRevision'], 4)
+                        self.assertEqual(stored['sourceProfiles']['future'],
+                                         {'opaque': [1, {'value': 'retained'}]})
+                    elif scenario == 'new_profile':
+                        self.assertEqual(stored['sourceProfilesRevision'], 1)
+                        self.assertEqual(stored['sourceProfiles']['audio']['source'],
+                                         'lib://saved-while-paused.taf')
+                finally:
+                    release.touch()
+                    pause.unlink(missing_ok=True)
+                    ready.unlink(missing_ok=True)
+                    release.unlink(missing_ok=True)
+
     def test_capability_and_inactive_audio_radio_roundtrip(self):
         ruid = '00000000000000a1'
         capability = request('/api/source-profiles/capabilities')
@@ -73,6 +138,35 @@ class SourceProfilesAPI(unittest.TestCase):
         self.assertEqual(json.loads(caught.exception.read())['error']['code'], 'method_not_allowed')
         self.assertEqual(request('/api/source-profiles?ruid=' + ruid)['revision'], 0)
         self.assertFalse(self.path(ruid).exists())
+
+    def test_bulk_model_rename_preserves_current_profiles_and_flags(self):
+        ruid = '00000000000000b5'
+        self.save(ruid, 'audio', 0, {'source': 'lib://saved.taf'})
+        path = self.path(ruid)
+        stored = json.loads(path.read_text())
+        stored.update(tonie_model='TC_PROFILE_OLD', hide=True, live=True, nocloud=True,
+                      source='https://example.org/live', sourceProfilesVersion=987)
+        stored['sourceProfiles']['future'] = {'opaque': ['retain']}
+        path.write_text(json.dumps(stored))
+        custom = SANDBOX / 'config/tonies.custom.json'
+        custom.write_text(json.dumps([{'model': 'TC_PROFILE_OLD', 'series': 'Test',
+                                       'audio_id': [982341], 'hash': ['0' * 40],
+                                       'title': 'Test', 'tracks': ['One']}]))
+        body = json.dumps({'fromModel': 'TC_PROFILE_OLD',
+                           'toModel': 'TC_PROFILE_NEW'}).encode()
+        response = urllib.request.urlopen(urllib.request.Request(
+            BASE + '/api/toniesCustomJsonRename', data=body,
+            headers={'Content-Type': 'application/json'}), timeout=15)
+        self.assertEqual(response.status, 200)
+        after = json.loads(path.read_text())
+        self.assertEqual(after['tonie_model'], 'TC_PROFILE_NEW')
+        self.assertTrue(after['hide'])
+        self.assertTrue(after['live'])
+        self.assertTrue(after['nocloud'])
+        self.assertEqual(after['source'], 'https://example.org/live')
+        self.assertEqual(after['sourceProfilesVersion'], 987)
+        self.assertEqual(after['sourceProfilesRevision'], 1)
+        self.assertEqual(after['sourceProfiles']['future'], {'opaque': ['retain']})
 
     def test_one_profile_cas_and_parallel_writers(self):
         ruid = '00000000000000a2'
