@@ -63,6 +63,10 @@ def main():
                     assert capabilities['supported'] and capabilities['trimSupported']
                     assert capabilities['sourceTypes'] == ['rss', 'ard_audiothek']
                     assert capabilities['maxRequestBytes'] == 65536
+                    assert capabilities['displayNameSupported']
+                    assert capabilities['placementRefreshAlways']
+                    profile_capability = json.loads(get('/api/source-profiles/capabilities'))
+                    assert profile_capability == dict(supported=True, version=1, maxRequestBytes=65536)
                     break
                 except Exception:
                     if time.monotonic() > deadline:
@@ -74,6 +78,7 @@ def main():
             assert scripts
             assert any(b'/api/podcasts/' in get(src if src.startswith('/') else '/web/' + src) for src in scripts)
             assert 'trimHelp' in json.loads(get('/web/translations/en.json'))['podcasts']
+            assert 'radioUrl' in json.loads(get('/web/translations/en.json'))['sources']
             run('exec', container, 'sh', '-c',
                 '! command -v node && ! command -v python3 && '
                 '! grep -a -q TC_PODCAST_FIXTURES /usr/local/bin/teddycloud && '
@@ -88,6 +93,8 @@ def main():
             config = dict(ruid='0123456789abcdef', feedUrl='https://example.org/feed.rss',
                           episodeCount=5, order='newest_first', intervalHours=0,
                           enabled=False, refreshOnPlacement=False, sourceType='rss',
+                          displayName='Chosen feed',
+                          displayNameSourceKey='rss:https://example.org/feed.rss',
                           trimStartSeconds=10, trimEndSeconds=15,
                           episodeTrimSourceKey='rss:https://example.org/feed.rss',
                           episodeTrims=[dict(identity='inactive', trimStartSeconds=0, trimEndSeconds=3)])
@@ -97,6 +104,15 @@ def main():
                 assert response.status == 201
                 saved = json.load(response)['subscription']
             assert saved['state'] == 'paused'
+            assert saved['refreshOnPlacement'] is True
+            assert saved['displayName'] == 'Chosen feed'
+            profile = dict(ruid=config['ruid'], kind='radio', expectedRevision=0,
+                           profile=dict(source='https://example.org/live', displayName='Station'))
+            req = urllib.request.Request(base + '/api/source-profiles/save',
+                                         data=json.dumps(profile).encode(), headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                assert response.status == 200
+                assert json.load(response)['revision'] == 1
             run('restart', '--time', '10', container, capture=True)
             deadline = time.monotonic() + 30
             while True:
@@ -105,6 +121,11 @@ def main():
                     assert subscriptions[0]['id'] == saved['id']
                     assert subscriptions[0]['trimStartSeconds'] == 10
                     assert subscriptions[0]['episodeTrims'] == config['episodeTrims']
+                    assert subscriptions[0]['displayName'] == 'Chosen feed'
+                    assert subscriptions[0]['refreshOnPlacement'] is True
+                    profiles = json.loads(get('/api/source-profiles?ruid=' + config['ruid']))
+                    assert profiles['revision'] == 1
+                    assert profiles['profiles']['radio'] == profile['profile']
                     break
                 except Exception:
                     if time.monotonic() > deadline:

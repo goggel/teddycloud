@@ -40,6 +40,16 @@ def request(action, body=None, status=200, query=''):
     return json.loads(raw)
 
 
+def save_profile(ruid, kind, expected_revision, profile):
+    body = json.dumps(dict(ruid=ruid, kind=kind,
+        expectedRevision=expected_revision, profile=profile)).encode()
+    req = urllib.request.Request(BASE + '/api/source-profiles/save', data=body,
+                                 headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=15) as response:
+        assert response.status == 200
+        return json.load(response)
+
+
 def feed(episodes):
     items = ''.join(f'<item><title>Episode {i}</title><guid>{i}</guid>'
                     f'<pubDate>Thu, 01 Jan 2026 {i:02}:00:00 +0000</pubDate>'
@@ -143,7 +153,10 @@ class PodcastAPI(unittest.TestCase):
             self.wait(saved)
             saved = request('subscriptions/save', dict(saved, expectedRevision=saved['revision'], ardShowUrl='https://ardaudiothek.de/sendung/example/23667030/'))['subscription']
             self.assertEqual(len(saved['episodeTrims']), 1)
-            self.wait(saved)
+            self.assertEqual(saved['sourceKey'], 'ard:' + CORE_ID)
+            self.assertEqual(saved['displayNameSourceKey'], saved['sourceKey'])
+            same_show = self.wait(saved)
+            self.assertEqual(same_show['audioId'], ready['audioId'])
             data = json.loads(page.read_text())
             url = 'https://podcasts.example.org/2.wav?v=2'
             data['data']['programSet']['items']['nodes'][1]['audios'][0]['downloadUrl'] = url
@@ -290,6 +303,83 @@ class PodcastAPI(unittest.TestCase):
             current = request('subscriptions', query='?ruid=' + ruid)['subscriptions'][0]
             request('subscriptions/detach', {'id': current['id'], 'expectedRevision': current['revision']})
 
+    def test_ard_placement_always_on_with_zero_interval(self):
+        ruid = '00000000000000b4'
+        config = dict(self.config(ruid), sourceType='ard_audiothek', feedUrl='',
+                      ardShowUrl=SHOW_URL, refreshOnPlacement=False, intervalHours=0)
+        saved = request('subscriptions/save', config, status=201)['subscription']
+        page = FIXTURES / 'ard-page-50.json'
+        original_page = page.read_text()
+        mapping_path = Path(os.environ['TC_PODCAST_FIXTURES'])
+        original_mapping = mapping_path.read_text()
+        clock = Path(os.environ['TC_PODCAST_CLOCK'])
+        previous_clock = int(clock.read_text())
+        box = box_module.Box('000000000004', str(SANDBOX), '127.0.0.1',
+                             int(os.environ['TEDDYCLOUD_HTTPS_API_PORT']))
+        self.addCleanup(box.close)
+        try:
+            first = self.wait(saved)
+            self.assertTrue(first['refreshOnPlacement'])
+            changed = json.loads(original_page)
+            url = 'https://podcasts.example.org/2.wav?ard-placement=1'
+            changed['data']['programSet']['items']['nodes'][1]['audios'][0]['downloadUrl'] = url
+            page.write_text(json.dumps(changed))
+            mapping = json.loads(original_mapping)
+            mapping[url] = str(FIXTURES / '2.wav')
+            mapping_path.write_text(json.dumps(mapping))
+            clock.write_text(str(previous_clock + 901))
+            uid = int.from_bytes(bytes.fromhex(ruid), 'little')
+            placement = rtnl.frame(rtnl.log2(1000, 1, rtnl.FUGR_TAG,
+                rtnl.FUNC_TAG_VALID_CC3200, struct.pack('>II', uid & 0xffffffff, uid >> 32),
+                field9=rtnl.CRLF))
+            box.rtnl(placement)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                current = self.wait(saved)
+                if current['audioId'] > first['audioId']:
+                    break
+                time.sleep(.1)
+            self.assertGreater(current['audioId'], first['audioId'])
+            self.assertEqual(current['intervalHours'], 0)
+            box.rtnl(placement)
+            time.sleep(.5)
+            self.assertEqual(self.wait(saved)['audioId'], current['audioId'])
+        finally:
+            clock.write_text(str(previous_clock))
+            page.write_text(original_page)
+            mapping_path.write_text(original_mapping)
+            current = request('subscriptions', query='?ruid=' + ruid)['subscriptions'][0]
+            request('subscriptions/detach', {'id': current['id'], 'expectedRevision': current['revision']})
+
+    def test_first_generation_owns_assignment_during_encoding_and_detach_wins(self):
+        control = Path(os.environ['TC_PODCAST_ENCODER_CONTROL'])
+        ruid = '00000000000000b5'
+        control.write_text('hang')
+        saved = request('subscriptions/save', dict(self.config(ruid), episodeCount=1), status=201)['subscription']
+        try:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                current = request('subscriptions', query='?ruid=' + ruid)['subscriptions'][0]
+                if current['state'] == 'encoding':
+                    break
+                time.sleep(.05)
+            self.assertEqual(current['state'], 'encoding')
+            self.assertTrue(current['ownsAssignment'])
+            request('subscriptions/detach', {'id': current['id'], 'expectedRevision': current['revision']})
+            saved = None
+            url = BASE + '/content/json/set/' + ruid
+            urllib.request.urlopen(urllib.request.Request(url,
+                data=b'source=lib%3A%2F%2Freplacement.taf&nocloud=true&live=false',
+                method='POST'), timeout=15).read()
+            time.sleep(.4)
+            content = SANDBOX / 'data/content/default/00000000/000000B5.json'
+            self.assertEqual(json.loads(content.read_text())['source'], 'lib://replacement.taf')
+        finally:
+            control.unlink(missing_ok=True)
+            if saved:
+                current = request('subscriptions', query='?ruid=' + ruid)['subscriptions'][0]
+                request('subscriptions/detach', {'id': current['id'], 'expectedRevision': current['revision']})
+
     def test_display_name_is_bound_before_preparation_and_survives_legacy_update(self):
         ruid = '00000000000000b1'
         config = dict(self.config(ruid, False), displayName='Émission 🎵',
@@ -316,6 +406,46 @@ class PodcastAPI(unittest.TestCase):
             self.assertEqual(saved['displayName'], '')
             self.assertEqual(saved['displayNameSourceKey'], '')
         finally:
+            request('subscriptions/detach', {'id': saved['id'], 'expectedRevision': saved['revision']})
+
+    def test_desired_name_and_prepared_title_diverge_without_reencoding_for_name_only(self):
+        ruid = '00000000000000b6'
+        feed_path = FIXTURES / 'feed.xml'
+        original_feed = feed_path.read_text()
+        config = self.config(ruid)
+        saved = request('subscriptions/save', config, status=201)['subscription']
+        try:
+            ready = self.wait(saved)
+            audio_id = ready['audioId']
+            prepared_source = json.loads((SANDBOX / 'data/content/default/00000000/000000B6.json').read_text())['source']
+            self.assertEqual(ready['title'], 'Test podcast')
+            feed_path.write_text(original_feed.replace('<title>Test podcast</title>', '<title></title>'))
+            named = request('subscriptions/save', dict(config, id=saved['id'],
+                expectedRevision=saved['revision'], displayName='Chosen name',
+                displayNameSourceKey='rss:' + FEED))['subscription']
+            saved = named
+            self.assertEqual(named['displayName'], 'Chosen name')
+            unchanged = self.wait(saved)
+            self.assertEqual(unchanged['audioId'], audio_id)
+            self.assertEqual(unchanged['title'], 'Test podcast')
+            self.assertEqual(unchanged['displayName'], 'Chosen name')
+            request('subscriptions/refresh', {'id':saved['id']}, status=202)
+            time.sleep(.4)
+            same = self.wait(saved)
+            self.assertEqual(same['audioId'], audio_id)
+            self.assertEqual(same['displayName'], 'Chosen name')
+            self.assertEqual(json.loads((SANDBOX / 'data/content/default/00000000/000000B6.json').read_text())['source'], prepared_source)
+            other = 'https://podcasts.example.org/other-feed.rss'
+            desired = request('subscriptions/save', dict(config, id=saved['id'],
+                expectedRevision=saved['revision'], feedUrl=other,
+                displayName='Feed B', displayNameSourceKey='rss:' + other))['subscription']
+            saved = desired
+            self.assertEqual(desired['displayName'], 'Feed B')
+            self.assertEqual(desired['title'], 'Test podcast')
+            self.wait(saved, 'error')
+            self.assertEqual(json.loads((SANDBOX / 'data/content/default/00000000/000000B6.json').read_text())['source'], prepared_source)
+        finally:
+            feed_path.write_text(original_feed)
             request('subscriptions/detach', {'id': saved['id'], 'expectedRevision': saved['revision']})
 
     def test_ard_resolved_title_is_bound_to_canonical_show(self):
@@ -357,6 +487,9 @@ class PodcastAPI(unittest.TestCase):
 
     def test_prepared_audio_refresh_failure_and_detach(self):
         config = self.config('0000000000000002')
+        profile = save_profile(config['ruid'], 'radio', 0,
+                               {'source':'https://example.org/live', 'displayName':'Station'})
+        self.assertEqual(profile['revision'], 1)
         preview = request('preview', config)
         self.assertEqual([e['identity'] for e in preview['episodes']], ['3', '2', '1'])
         saved = request('subscriptions/save', config, status=201)['subscription']
@@ -364,6 +497,8 @@ class PodcastAPI(unittest.TestCase):
         self.assertEqual([e['identity'] for e in ready['episodes']], ['3', '2', '1'])
         content = SANDBOX / 'data/content/default/00000000/00000002.json'
         assigned = json.loads(content.read_text())
+        self.assertEqual(assigned['sourceProfiles']['radio']['displayName'], 'Station')
+        self.assertEqual(assigned['sourceProfilesRevision'], 1)
         self.assertFalse(assigned['live']); self.assertTrue(assigned['nocloud'])
         self.assertFalse(assigned['cloud_override'])
         audio = SANDBOX / 'data/library' / assigned['source'][6:]
@@ -374,6 +509,7 @@ class PodcastAPI(unittest.TestCase):
         request('subscriptions/refresh', {'id': saved['id']}, status=202)
         time.sleep(.4); same = self.wait(saved)
         self.assertEqual(audio_id, same['audioId'])
+        self.assertEqual(json.loads(content.read_text())['sourceProfilesRevision'], 1)
         feed([1, 2, 3, 4])
         request('subscriptions/refresh', {'id': saved['id']}, status=202)
         deadline = time.monotonic() + 30
@@ -577,6 +713,8 @@ class PodcastAPI(unittest.TestCase):
 
     def test_decoder_partial_frames_failures_and_cancellation(self):
         control = Path(os.environ['TC_PODCAST_ENCODER_CONTROL'])
+        feed_path = FIXTURES / 'feed.xml'
+        original_feed = feed_path.read_text()
         config = dict(self.config('000000000000000a'), episodeCount=1, trimEndSeconds=1)
         saved = request('subscriptions/save', dict(config, enabled=False), status=201)['subscription']
         def mode(value):
@@ -588,6 +726,8 @@ class PodcastAPI(unittest.TestCase):
             prepared = self.wait(saved)
             self.assertAlmostEqual(prepared['episodes'][0]['trimmedDurationSeconds'], .2, places=4)
             published = prepared['audioId']
+            feed_path.write_text(original_feed.replace('<title>Test podcast</title>',
+                                                      '<title>Updated selection</title>'))
             for failure in ['fail_second', 'inconsistent', 'partial_frame']:
                 mode(failure)
                 saved = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision'], trimEndSeconds=1, trimStartSeconds=0,
@@ -595,6 +735,8 @@ class PodcastAPI(unittest.TestCase):
                 failed = self.wait(saved, 'error')
                 self.assertEqual(failed['audioId'], published)
                 self.assertTrue(failed['lastError'])
+                self.assertEqual(failed['displayName'], 'Updated selection')
+                self.assertEqual(failed['title'], prepared['title'])
             mode('hang')
             request('subscriptions/refresh', {'id':saved['id']}, status=202)
             deadline = time.monotonic() + 5
@@ -613,6 +755,7 @@ class PodcastAPI(unittest.TestCase):
             self.assertEqual(request('subscriptions', query='?ruid='+saved['ruid'])['subscriptions'][0]['audioId'], published)
         finally:
             control.unlink(missing_ok=True)
+            feed_path.write_text(original_feed)
             request('subscriptions/detach', {'id':saved['id'], 'expectedRevision':saved['revision']})
 
     def test_y_provider_rate_budgets(self):
@@ -669,6 +812,8 @@ class PodcastAPI(unittest.TestCase):
         saved = request('subscriptions/save', config, status=201)['subscription']
         first = self.wait(saved)
         content = SANDBOX / 'data/content/default/00000000/00000005.json'
+        save_profile(config['ruid'], 'radio', 0,
+                     {'source':'https://example.org/live', 'displayName':'Recovery station'})
         for boundary, count in [('after_intent', 2), ('after_source', 1)]:
             Path(os.environ['TC_PODCAST_FAILURE']).write_text(boundary)
             saved = request('subscriptions/save', dict(config, episodeCount=count, id=saved['id'], expectedRevision=saved['revision']))['subscription']
@@ -677,6 +822,8 @@ class PodcastAPI(unittest.TestCase):
             start()
             recovered = self.wait(saved)
             current_source = json.loads(content.read_text())['source']
+            self.assertEqual(json.loads(content.read_text())['sourceProfiles']['radio']['displayName'], 'Recovery station')
+            self.assertEqual(json.loads(content.read_text())['sourceProfilesRevision'], 1)
             audio = SANDBOX / 'data/library' / current_source[6:]
             audio_id, chapters = taf_header(audio)
             self.assertEqual(len(chapters), count)

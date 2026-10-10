@@ -29,7 +29,7 @@ are rejected instead of falling back to the default assignment.
   "episodeCount": 5,
   "order": "newest_first",
   "intervalHours": 6,
-  "refreshOnPlacement": false,
+  "refreshOnPlacement": true,
   "enabled": true
 }
 ```
@@ -39,6 +39,11 @@ Edits additionally carry `id` and the revision originally loaded as
 replace the editing revision. Save accepts configuration and queues preparation;
 it does not imply audio is ready. Config changes supersede older jobs. Playback
 orders are `newest_first` and `oldest_first`; both choose the latest N first.
+`refreshOnPlacement` remains in the schema for older clients, but missing or
+explicit `false` values normalize to `true`. Wrong types return 400. Enabled
+subscriptions check on recognized placement even when `intervalHours` is zero;
+the 900-second throttle, queue limit and job deduplication still apply. This
+starts a background check and does not guarantee fresh audio for that placement.
 
 For ARD use `sourceType:"ard_audiothek"`, `ardShowUrl` and an empty `feedUrl`.
 The server resolves numeric/URN show links to `sourceKey:"ard:<coreId>"` and
@@ -46,6 +51,15 @@ The server resolves numeric/URN show links to `sourceKey:"ard:<coreId>"` and
 not change the configured identity. Apple results contain numeric `providerId`
 and `feedUrl`; ARD results contain string `providerId`, `ardShowUrl`, `ardShowId`
 and `sourceKey`.
+`displayName` and `displayNameSourceKey` are optional bound selection metadata.
+Names are at most 512 UTF-8 bytes without controls, and never affect source
+identity, ownership or the TAF fingerprint. A selected name is returned in the
+save response before preparation; successful feed resolution may refine it for
+the current revision/source, including when a later download fails. Missing
+titles or failed lookups preserve the existing bound name. On a source change
+an old name is cleared. `title` remains the last successfully prepared title.
+Old clients may omit the new fields. Capabilities advertise
+`displayNameSupported` and `placementRefreshAlways`.
 
 Cuts are integer seconds, 0–21,600. Each `episodeTrims` entry contains a unique,
 nonempty `identity` (up to 512 UTF-8 bytes, no controls) and both
@@ -78,6 +92,14 @@ must also share the library directory. On successful preparation the managed
 source is `lib://podcasts/<id>/<audio-id>.taf`, with live off, no-cloud on and
 cloud override off. Originals are restored on detach only if management still
 owns the source. A manual change pauses the subscription.
+
+`ownsAssignment` in a rUID-scoped subscription response reports whether the
+subscription still controls the actual content source. A queued or running
+first generation can own its original assignment before its first TAF exists.
+Paused subscriptions with a published TAF may still own that assignment;
+inactive subscriptions without a queued/running job do not claim the original.
+Older servers may omit this field; clients can infer ownership only from an
+exact generated podcast source path, and must avoid ambiguous direct switches.
 
 States: idle, queued, checking, downloading, encoding, ready, error, paused.
 `lastSuccessAt` means the last successful check; `episodes` and `audioId` describe
