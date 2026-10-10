@@ -21,6 +21,15 @@ double podcast_number(const cJSON *o, const char *key)
     const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, key);
     return cJSON_IsNumber(v) ? v->valuedouble : 0;
 }
+static bool optional_text(const cJSON *object, const char *key, size_t limit)
+{
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
+    if (!value) return true;
+    if (!cJSON_IsString(value) || strlen(value->valuestring) > limit) return false;
+    for (const unsigned char *p = (const unsigned char *)value->valuestring; *p; p++)
+        if (*p < 32 || *p == 127) return false;
+    return true;
+}
 bool podcast_config_valid(const cJSON *c, char *err, size_t size)
 {
     double n = podcast_number(c, "episodeCount"), h = podcast_number(c, "intervalHours");
@@ -35,7 +44,11 @@ bool podcast_config_valid(const cJSON *c, char *err, size_t size)
                  cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(c, "intervalHours")) && h >= 0 && h <= 168 &&
                  floor(h) == h && (!strcmp(order, "newest_first") || !strcmp(order, "oldest_first")) &&
                  cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(c, "enabled")) &&
-                 cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(c, "refreshOnPlacement"));
+                 (!cJSON_GetObjectItemCaseSensitive(c, "refreshOnPlacement") ||
+                  cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(c, "refreshOnPlacement"))) &&
+                 optional_text(c, "displayName", 512) &&
+                 optional_text(c, "displayNameSourceKey", 2052) &&
+                 (!*podcast_string(c, "displayName") || *podcast_string(c, "displayNameSourceKey"));
     if (!valid)
         snprintf(err, size, "Use a public RSS URL, 1–50 episodes, a playback order and 0–168 whole hours");
     return valid && podcast_trim_valid(c, err, size);

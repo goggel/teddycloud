@@ -85,6 +85,12 @@ error_t load_content_json(const char *content_path, contentJson_t *content_json,
                 content_json->tonie_model = jsonGetString(contentJson, "tonie_model");
                 content_json->hide = jsonGetBool(contentJson, "hide");
                 content_json->claimed = jsonGetBool(contentJson, "claimed");
+                cJSON *profiles_version = cJSON_GetObjectItemCaseSensitive(contentJson, "sourceProfilesVersion");
+                cJSON *profiles_revision = cJSON_GetObjectItemCaseSensitive(contentJson, "sourceProfilesRevision");
+                cJSON *profiles = cJSON_GetObjectItemCaseSensitive(contentJson, "sourceProfiles");
+                if (profiles_version) content_json->source_profiles_version = cJSON_Duplicate(profiles_version, true);
+                if (profiles_revision) content_json->source_profiles_revision = cJSON_Duplicate(profiles_revision, true);
+                if (profiles) content_json->source_profiles = cJSON_Duplicate(profiles, true);
 
                 // TODO: use checkCustomTonie to validate
                 // TODO validate rUID
@@ -208,6 +214,12 @@ error_t save_content_json(const char *json_path, contentJson_t *content_json)
     jsonAddStringToObject(contentJson, "tonie_model", content_json->tonie_model);
     cJSON_AddBoolToObject(contentJson, "hide", content_json->hide);
     cJSON_AddBoolToObject(contentJson, "claimed", content_json->claimed);
+    if (content_json->source_profiles_version)
+        cJSON_AddItemToObject(contentJson, "sourceProfilesVersion", cJSON_Duplicate(content_json->source_profiles_version, true));
+    if (content_json->source_profiles_revision)
+        cJSON_AddItemToObject(contentJson, "sourceProfilesRevision", cJSON_Duplicate(content_json->source_profiles_revision, true));
+    if (content_json->source_profiles)
+        cJSON_AddItemToObject(contentJson, "sourceProfiles", cJSON_Duplicate(content_json->source_profiles, true));
     cJSON_AddNumberToObject(contentJson, "_version", CONTENT_JSON_VERSION);
 
     char *jsonRaw = cJSON_Print(contentJson);
@@ -271,6 +283,12 @@ void content_json_update_model(contentJson_t *content_json, uint32_t audio_id, u
 void free_content_json(contentJson_t *content_json)
 {
     content_json->_valid = false;
+    cJSON_Delete(content_json->source_profiles_version);
+    cJSON_Delete(content_json->source_profiles_revision);
+    cJSON_Delete(content_json->source_profiles);
+    content_json->source_profiles_version = NULL;
+    content_json->source_profiles_revision = NULL;
+    content_json->source_profiles = NULL;
     if (content_json->source)
     {
         osFreeMem(content_json->source);
