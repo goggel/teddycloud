@@ -21,4 +21,5 @@ RUN make build NO_SANITIZERS=1 -j4 && make test_podcast
 RUN make build PODCAST_SUPPORT=0 BIN_DIR=bin/podcast-disabled NO_SANITIZERS=1 -j4 \
     && ! ldd bin/podcast-disabled/teddycloud | grep -E 'lib(curl|xml2)'
 RUN TC_SERVER_BIN=/buildenv/bin/podcast-disabled/teddycloud bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_podcast_disabled.py
+RUN TC_SERVER_BIN=/buildenv/bin/podcast-disabled/teddycloud bash tests/py/with_server.sh 0 0 0 180 -- python3 tests/test_source_profiles.py
 CMD ["make", "test_podcast"]

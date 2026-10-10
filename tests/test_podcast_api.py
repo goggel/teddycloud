@@ -227,6 +227,8 @@ class PodcastAPI(unittest.TestCase):
 
     def test_capabilities_and_validation(self):
         self.assertTrue(request('capabilities')['supported'])
+        self.assertTrue(request('capabilities')['displayNameSupported'])
+        self.assertTrue(request('capabilities')['placementRefreshAlways'])
         self.assertEqual(request('subscriptions')['subscriptions'], [])
         request('subscriptions', query='?overlay=does-not-exist', status=404)
         request('subscriptions', query='?ruid=../../bad', status=400)
@@ -236,7 +238,99 @@ class PodcastAPI(unittest.TestCase):
         request('subscriptions/save', dict(self.config('0000000000000001'), intervalHours=-1), status=400)
         request('subscriptions/save', dict(self.config('0000000000000001'), intervalHours=1.5), status=400)
         request('subscriptions/save', dict(self.config('0000000000000001'), refreshOnPlacement='true'), status=400)
+        request('subscriptions/save', dict(self.config('0000000000000001'), refreshOnPlacement=1), status=400)
         request('subscriptions/save', {'padding': 'x' * 65536}, status=413)
+
+    def test_placement_always_on_with_legacy_false_and_zero_interval(self):
+        feed([1, 2, 3])
+        ruid = '00000000000000b3'
+        config = dict(self.config(ruid), refreshOnPlacement=False, intervalHours=0)
+        saved = request('subscriptions/save', config, status=201)['subscription']
+        clock = Path(os.environ['TC_PODCAST_CLOCK'])
+        previous_clock = int(clock.read_text())
+        box = box_module.Box('000000000003', str(SANDBOX), '127.0.0.1', int(os.environ['TEDDYCLOUD_HTTPS_API_PORT']))
+        self.addCleanup(box.close)
+        try:
+            self.assertTrue(saved['refreshOnPlacement'])
+            first = self.wait(saved)
+            self.assertTrue(first['refreshOnPlacement'])
+            missing = self.config(ruid)
+            missing.pop('refreshOnPlacement')
+            saved = request('subscriptions/save', dict(missing, id=saved['id'],
+                            expectedRevision=saved['revision']))['subscription']
+            self.assertTrue(saved['refreshOnPlacement'])
+            self.wait(saved)
+            feed([1, 2, 3, 4])
+            clock.write_text(str(previous_clock + 901))
+            uid = int.from_bytes(bytes.fromhex(ruid), 'little')
+            placement = rtnl.frame(rtnl.log2(1000, 1, rtnl.FUGR_TAG, rtnl.FUNC_TAG_VALID_CC3200,
+                struct.pack('>II', uid & 0xffffffff, uid >> 32), field9=rtnl.CRLF))
+            box.rtnl(placement)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                placed = self.wait(saved)
+                if placed['audioId'] > first['audioId']: break
+                time.sleep(.1)
+            self.assertGreater(placed['audioId'], first['audioId'])
+            self.assertEqual(placed['intervalHours'], 0)
+            feed([1, 2, 3])
+            box.rtnl(placement)
+            time.sleep(.5)
+            self.assertEqual(self.wait(saved)['audioId'], placed['audioId'])
+            saved = request('subscriptions/save', dict(missing, id=saved['id'],
+                    expectedRevision=saved['revision'], enabled=False))['subscription']
+            self.assertFalse(saved['enabled'])
+            clock.write_text(str(previous_clock + 1802))
+            box.rtnl(placement)
+            time.sleep(.5)
+            self.assertEqual(request('subscriptions', query='?ruid=' + ruid)['subscriptions'][0]['audioId'], placed['audioId'])
+        finally:
+            clock.write_text(str(previous_clock))
+            feed([1, 2, 3])
+            current = request('subscriptions', query='?ruid=' + ruid)['subscriptions'][0]
+            request('subscriptions/detach', {'id': current['id'], 'expectedRevision': current['revision']})
+
+    def test_display_name_is_bound_before_preparation_and_survives_legacy_update(self):
+        ruid = '00000000000000b1'
+        config = dict(self.config(ruid, False), displayName='Émission 🎵',
+                      displayNameSourceKey='rss:' + FEED)
+        saved = request('subscriptions/save', config, status=201)['subscription']
+        try:
+            self.assertEqual(saved['displayName'], 'Émission 🎵')
+            self.assertEqual(saved['displayNameSourceKey'], 'rss:' + FEED)
+            self.assertEqual(saved.get('title', ''), '')
+            request('subscriptions/save', dict(config, id=saved['id'],
+                    expectedRevision=saved['revision'], displayName='x' * 513), status=400)
+            request('subscriptions/save', dict(config, id=saved['id'],
+                    expectedRevision=saved['revision'], displayName='bad\nname'), status=400)
+            mismatch = request('subscriptions/save', dict(config, id=saved['id'],
+                    expectedRevision=saved['revision'], displayNameSourceKey='rss:https://other.example/feed'), status=409)
+            self.assertEqual(mismatch['error']['code'], 'conflict')
+            legacy = self.config(ruid, False)
+            saved = request('subscriptions/save', dict(legacy, id=saved['id'],
+                            expectedRevision=saved['revision']))['subscription']
+            self.assertEqual(saved['displayName'], 'Émission 🎵')
+            changed = request('subscriptions/save', dict(legacy, id=saved['id'],
+                    expectedRevision=saved['revision'], feedUrl='https://other.example/feed'))['subscription']
+            saved = changed
+            self.assertEqual(saved['displayName'], '')
+            self.assertEqual(saved['displayNameSourceKey'], '')
+        finally:
+            request('subscriptions/detach', {'id': saved['id'], 'expectedRevision': saved['revision']})
+
+    def test_ard_resolved_title_is_bound_to_canonical_show(self):
+        ruid = '00000000000000b2'
+        config = dict(self.config(ruid, False), sourceType='ard_audiothek', feedUrl='',
+                      ardShowUrl=SHOW_URL, displayName='Search result title',
+                      displayNameSourceKey=SHOW_URL)
+        saved = request('subscriptions/save', config, status=201)['subscription']
+        try:
+            self.assertTrue(saved['displayName'])
+            self.assertNotEqual(saved['displayName'], 'Search result title')
+            self.assertEqual(saved['displayNameSourceKey'], saved['sourceKey'])
+            self.assertEqual(saved.get('title', ''), '')
+        finally:
+            request('subscriptions/detach', {'id': saved['id'], 'expectedRevision': saved['revision']})
 
     def test_discovery_and_manual_feed_fallback(self):
         result = request('search', query='?q=Example%20Show&country=DE')['results']
@@ -558,7 +652,14 @@ class PodcastAPI(unittest.TestCase):
                 except Exception: pass
                 time.sleep(.1)
             self.fail('Restart did not become ready')
+        registry = SANDBOX / 'config/podcasts.json'
+        before_policy = json.loads(registry.read_text())
+        for subscription in before_policy['subscriptions']:
+            subscription['refreshOnPlacement'] = False
+        registry.write_text(json.dumps(before_policy))
         start()
+        after_policy = json.loads(registry.read_text())
+        self.assertTrue(all(s['refreshOnPlacement'] for s in after_policy['subscriptions']))
         box = getattr(self, 'pinned_box', None)
         if box:
             status, _, body = box.request('GET', '/v1/content/' + self.pinned_subscription['ruid'], headers={'Range': 'bytes=4096-'})
@@ -590,10 +691,13 @@ class PodcastAPI(unittest.TestCase):
         request('subscriptions/refresh', {'id': saved['id']}, status=409)
         self.assertEqual(json.loads(content.read_text())['source'], '')
         stop()
-        registry = SANDBOX / 'config/podcasts.json'
         legacy = json.loads(registry.read_text())
         legacy['version'] = 1
-        for subscription in legacy['subscriptions']:
+        for index, subscription in enumerate(legacy['subscriptions']):
+            if index == 0:
+                subscription.pop('refreshOnPlacement', None)
+            else:
+                subscription['refreshOnPlacement'] = False
             for key in ['sourceType', 'sourceKey', 'ardShowUrl', 'ardShowId', 'trimStartSeconds', 'trimEndSeconds', 'episodeTrims', 'episodeTrimSourceKey']:
                 subscription.pop(key, None)
         registry.write_text(json.dumps(legacy))
@@ -606,6 +710,7 @@ class PodcastAPI(unittest.TestCase):
         self.assertEqual(json.loads(migration_backup.read_text()), legacy)
         self.assertEqual([s['id'] for s in migrated['subscriptions']], [s['id'] for s in legacy['subscriptions']])
         self.assertTrue(all(s['trimStartSeconds'] == 0 for s in migrated['subscriptions']))
+        self.assertTrue(all(s['refreshOnPlacement'] for s in migrated['subscriptions']))
         if box:
             status, _, body = box.request('GET', '/v1/content/' + self.pinned_subscription['ruid'], headers={'Range': 'bytes=4096-'})
             self.assertEqual(status, 206); self.assertEqual(body, self.pinned_audio[4096:])

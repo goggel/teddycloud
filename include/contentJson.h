@@ -6,6 +6,7 @@
 #include "settings.h"
 #include "tonie_audio_playlist.h"
 #include "proto/toniebox.pb.taf-header.pb-c.h"
+#include "cJSON.h"
 
 typedef enum
 {
@@ -32,6 +33,9 @@ typedef struct
     char *_source_model;
     bool_t hide;
     bool_t claimed;
+    cJSON *source_profiles_version;
+    cJSON *source_profiles_revision;
+    cJSON *source_profiles;
 
     bool_t _has_cloud_auth;
     ct_source_t _source_type;

@@ -22,6 +22,10 @@ typedef struct
 
 #define POST_BUFFER_SIZE 1024 * 32
 
+/* Resolve the same rUID content path as the legacy JSON API, but require an
+ * explicitly existing overlay instead of get_settings_ovl's fallback. */
+bool resolveSourceProfileContent(const char *overlay, const char *ruid, char **content_path, settings_t **settings);
+
 void stats_update(const char *item, int count);
 
 error_t handleApiUploadCert(HttpConnection *connection, const char_t *uri, const char_t *queryString, client_ctx_t *client_ctx);

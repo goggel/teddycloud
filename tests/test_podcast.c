@@ -50,10 +50,28 @@ static void test_feed_media(void)
     assert(!podcast_feed_video_only(NULL, 0, "https://example.org/feed"));
     assert(!podcast_feed_video_only(video, PODCAST_FEED_LIMIT + 1, "https://example.org/feed"));
 }
+static void test_display_name_validation(void)
+{
+    cJSON *config = cJSON_Parse("{\"feedUrl\":\"https://example.org/feed\",\"episodeCount\":1,"
+                                 "\"order\":\"newest_first\",\"intervalHours\":0,"
+                                 "\"enabled\":true,\"refreshOnPlacement\":true}");
+    char error[256];
+    assert(config && podcast_config_valid(config, error, sizeof(error)));
+    cJSON_AddStringToObject(config, "displayName", "Podcast 🎵");
+    cJSON_AddStringToObject(config, "displayNameSourceKey", "rss:https://example.org/feed");
+    assert(podcast_config_valid(config, error, sizeof(error)));
+    cJSON_ReplaceItemInObject(config, "displayName", cJSON_CreateString("bad\nname"));
+    assert(!podcast_config_valid(config, error, sizeof(error)));
+    cJSON_ReplaceItemInObject(config, "displayName", cJSON_CreateString("Name"));
+    cJSON_ReplaceItemInObject(config, "displayNameSourceKey", cJSON_CreateNumber(1));
+    assert(!podcast_config_valid(config, error, sizeof(error)));
+    cJSON_Delete(config);
+}
 int main(void)
 {
     assert(podcast_http_init());
     test_feed_media();
+    test_display_name_validation();
     char identifier[64];
     assert(podcast_ard_identifier("https://ardaudiothek.de/sendung/show/23667030/?share=1", identifier));
     assert(!strcmp(identifier, "23667030"));
@@ -202,6 +220,11 @@ int main(void)
     assert(!podcast_ard_date("2026-01-01T01:00:00+01:-1", &invalid_date));
     char error[256];
     assert(podcast_config_valid(config, error, sizeof(error)));
+    cJSON_DeleteItemFromObjectCaseSensitive(config, "refreshOnPlacement");
+    assert(podcast_config_valid(config, error, sizeof(error)));
+    cJSON_AddStringToObject(config, "refreshOnPlacement", "false");
+    assert(!podcast_config_valid(config, error, sizeof(error)));
+    cJSON_DeleteItemFromObjectCaseSensitive(config, "refreshOnPlacement");
     cJSON_SetNumberValue(cJSON_GetObjectItemCaseSensitive(config, "episodeCount"), 1.5);
     assert(!podcast_config_valid(config, error, sizeof(error)));
     cJSON_Delete(config);

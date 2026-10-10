@@ -1,4 +1,5 @@
 #include "handler_podcast.h"
+#include "handler_source_profiles.h"
 #include "podcast.h"
 
 
@@ -141,6 +142,9 @@ request_type_t request_paths[] = {
     {REQ_POST, "/api/auth/users/updatePassword", SERTY_WEB, &handleApiAuthUsersPassword},
     {REQ_POST, "/api/auth/enabled", SERTY_WEB, &handleApiAuthEnabled},
     {REQ_GET, "/api/podcasts/capabilities", SERTY_WEB, &handleApiPodcast},
+    {REQ_GET, "/api/source-profiles/capabilities", SERTY_WEB, &handleApiSourceProfiles},
+    {REQ_POST, "/api/source-profiles/save", SERTY_WEB, &handleApiSourceProfiles},
+    {REQ_GET, "/api/source-profiles", SERTY_WEB, &handleApiSourceProfiles},
     {REQ_GET, "/api/podcasts/search", SERTY_WEB, &handleApiPodcast},
     {REQ_POST, "/api/podcasts/preview", SERTY_WEB, &handleApiPodcast},
     {REQ_POST, "/api/podcasts/feed-info", SERTY_WEB, &handleApiPodcast},
