@@ -61,6 +61,19 @@ class SourceProfilesAPI(unittest.TestCase):
         self.assertEqual(request('/api/source-profiles?ruid=' + ruid), radio)
         self.assertTrue(json.loads(self.path(ruid).read_text())['hide'])
 
+    def test_get_save_cannot_mutate_a_profile(self):
+        ruid = '00000000000000a6'
+        body = json.dumps(dict(ruid=ruid, kind='audio', expectedRevision=0,
+                               profile={'source': 'lib://must-not-write.taf'})).encode()
+        req = urllib.request.Request(BASE + '/api/source-profiles/save', data=body,
+                                     method='GET', headers={'Content-Type': 'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=15)
+        self.assertEqual(caught.exception.status, 405)
+        self.assertEqual(json.loads(caught.exception.read())['error']['code'], 'method_not_allowed')
+        self.assertEqual(request('/api/source-profiles?ruid=' + ruid)['revision'], 0)
+        self.assertFalse(self.path(ruid).exists())
+
     def test_one_profile_cas_and_parallel_writers(self):
         ruid = '00000000000000a2'
         self.save(ruid, 'audio', 0, {'source': 'a'})

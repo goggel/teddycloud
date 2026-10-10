@@ -1,11 +1,31 @@
 # Prepared podcast Tonies
 
-In **Tonies → Edit Tonie**, choose **Podcast** in the audio selector. Search by
-name using the Apple RSS directory or ARD Audiothek / ARD Sounds, or paste a
-public RSS feed URL or supported ARD show link. Choose the number of recent episodes, their
+In **Tonies → Edit Tonie**, choose among four source forms: **Audio files**,
+**Radio**, **Podcast**, and **ARD Audiothek / Sounds**. Audio files retain the
+library/path picker and previous/next-file actions. Radio has its own station
+search, URL and selected station name. Podcast searches Apple's RSS directory;
+ARD searches audio shows, not video. Paste a public RSS feed URL or supported
+ARD show link when needed. Choose the number of recent episodes, their
 playback order, and the check interval. Preview shows the requested selection;
 **Save** starts preparation. Each episode becomes a chapter in one Tonie audio
 file. The preparation continues when the browser closes.
+
+Each source has an independent saved profile, including separate RSS and ARD
+cuts. Switching forms only changes a local draft; **Save** stores changed
+profiles and activates the selected source. **Cancel** discards draft changes.
+Profiles persist in the content JSON across browsers and server restarts, but
+only one source is active and at most one podcast subscription exists for a
+Tonie. The active assignment and subscription ownership determine what plays;
+saved inactive profiles do not start jobs. Legacy unknown HTTP/TAP paths remain
+editable in the audio path form. A direct audio/radio assignment uses the
+existing source setter, which accepts at most 255 UTF-8 bytes.
+
+Selecting a search result shows its name immediately. The selected name remains
+visible after saving and reopening; its URL is available in the labeled detail
+field and can be edited. A manual URL change clears the old source-bound name.
+The status area separately identifies the title of the last successfully
+prepared selection, which can differ while a new feed is preparing. A feed
+lookup can update the selected name even when later audio preparation fails.
 
 The editor distinguishes the requested selection from the currently prepared
 episodes. A failed refresh leaves the previous complete audio assigned. **Refresh
@@ -15,8 +35,9 @@ Choosing another source pauses automatic management. Prepared files are kept
 when removing a subscription.
 
 The default is five episodes, newest first, checked every six hours. An interval
-of zero disables periodic checks. Optional placement refresh checks in the
-background, at most once every 15 minutes. The box may play the previous episodes
+of zero disables periodic checks. An enabled RSS or ARD subscription always
+checks in the background on recognized placement, at most once every 15 minutes;
+repeated placements and duplicate jobs are throttled. The box may play the previous episodes
 on that placement; newly prepared content becomes available at its next suitable
 online freshness/content request. Use the box's normal sync gesture when needed.
 Offline playback requires the box to have downloaded the entire prepared file.
@@ -50,6 +71,12 @@ This feature is included in the TeddyCloud server and existing web UI. Deploy on
 image with the usual config, content and library volumes. No plugin, cron, script,
 extra port, browser session or companion container is required. FFmpeg, libcurl
 and libxml2 are image dependencies. Node/Python are development/test tools only.
+The source-profile endpoints use the same web access path, container and volumes.
+Profile saves, subscription changes, source assignment and model assignment are
+separate API operations. If a later operation fails, the editor stays open and
+shows which profiles were confirmed and which source the server reports active;
+retry after reviewing that state. A successful detach followed by a failed
+direct assignment leaves the restored original as the actual source.
 
 Both repositories need matching feature commits. Follow the repository's normal
 two-PR contribution workflow; a maintainer bundles the frontend for releases.
@@ -159,6 +186,6 @@ for each row before calling the feature device-validated:
 | Container restart/reconnect during playback/download | Pending |
 | Prepared ARD episodes and trim-specific chapter transitions | Pending |
 
-See [validation results](podcast-validation.md) for verified commits and local
+See [source-profile API](api/source-profiles.md), [validation results](podcast-validation.md) for verified commits and local
 images, [download protocol](podcast-download-protocol.md) for the device-specific
 recovery gate and [API](api/podcasts.md) for integration details.

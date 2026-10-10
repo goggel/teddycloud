@@ -32,7 +32,19 @@ error_t handleApiSourceProfiles(HttpConnection *connection, const char_t *uri,
     cJSON *body = NULL, *response = NULL;
     char overlay[128] = "", ruid[32] = "";
     queryGet(query, "overlay", overlay, sizeof(overlay));
-    if (!strcmp(uri, "/api/source-profiles/capabilities"))
+    if ((!strcmp(uri, "/api/source-profiles/save") &&
+         osStrcasecmp(connection->request.method, "POST")) ||
+        ((!strcmp(uri, "/api/source-profiles") ||
+          !strcmp(uri, "/api/source-profiles/capabilities")) &&
+         osStrcasecmp(connection->request.method, "GET")))
+    {
+        status = 405;
+        response = cJSON_CreateObject();
+        cJSON *error = cJSON_AddObjectToObject(response, "error");
+        cJSON_AddStringToObject(error, "code", "method_not_allowed");
+        cJSON_AddStringToObject(error, "message", "Method not allowed for source profiles endpoint");
+    }
+    else if (!strcmp(uri, "/api/source-profiles/capabilities"))
     {
         response = cJSON_CreateObject();
         cJSON_AddBoolToObject(response, "supported", true);
@@ -96,6 +108,6 @@ error_t handleApiSourceProfiles(HttpConnection *connection, const char_t *uri,
     if (!raw) return ERROR_OUT_OF_MEMORY;
     httpPrepareHeader(connection, "application/json; charset=utf-8", strlen(raw));
     connection->response.statusCode = status;
-    if (status == 400 || status == 413) connection->response.keepAlive = false;
+    if (status == 400 || status == 405 || status == 413) connection->response.keepAlive = false;
     return httpWriteResponseString(connection, raw, true);
 }
