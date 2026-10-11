@@ -127,6 +127,22 @@ class SourceProfilesAPI(unittest.TestCase):
         self.assertEqual(request('/api/source-profiles?ruid=' + ruid), radio)
         self.assertTrue(json.loads(self.path(ruid).read_text())['hide'])
 
+    def test_save_preserves_damaged_metadata_and_missing_file_cas(self):
+        ruid = '00000000000000c1'
+        path = self.path(ruid)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for damaged in [b'{"_version":5,"sourceProfiles":', b'not JSON', b'']:
+            path.write_bytes(damaged)
+            request('/api/source-profiles?ruid=' + ruid, status=503)
+            self.save(ruid, 'audio', 0, {'source': 'lib://new.taf'}, status=503)
+            self.assertEqual(path.read_bytes(), damaged)
+        path.unlink()
+        self.save(ruid, 'audio', 3, {'source': 'lib://new.taf'}, status=409)
+        self.assertFalse(path.exists())
+        saved = self.save(ruid, 'audio', 0, {'source': 'lib://new.taf'})
+        self.assertEqual(saved['revision'], 1)
+        self.assertEqual(json.loads(path.read_text())['sourceProfilesRevision'], 1)
+
     def test_get_save_cannot_mutate_a_profile(self):
         ruid = '00000000000000a6'
         body = json.dumps(dict(ruid=ruid, kind='audio', expectedRevision=0,
