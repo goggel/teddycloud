@@ -161,7 +161,7 @@ class SourceProfilesAPI(unittest.TestCase):
 
     def test_explicit_assignment_kind_is_source_bound_and_legacy_assignments_clear_it(self):
         from urllib.parse import urlencode
-        ruid = '00000000000000c2'
+        ruid = 'c200000000000001'  # TagIndex currently emits one entry per prefix directory.
         path = self.path(ruid)
         source = 'https://example.org/shared.mp3'
 
