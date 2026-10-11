@@ -96,6 +96,8 @@ error_t load_content_json(const char *content_path, contentJson_t *content_json,
                 if (profiles_version) content_json->source_profiles_version = cJSON_Duplicate(profiles_version, true);
                 if (profiles_revision) content_json->source_profiles_revision = cJSON_Duplicate(profiles_revision, true);
                 if (profiles) content_json->source_profiles = cJSON_Duplicate(profiles, true);
+                cJSON *assignment = cJSON_GetObjectItemCaseSensitive(contentJson, "sourceAssignment");
+                if (assignment) content_json->source_assignment = cJSON_Duplicate(assignment, true);
 
                 // TODO: use checkCustomTonie to validate
                 // TODO validate rUID
@@ -187,6 +189,18 @@ error_t load_content_json(const char *content_path, contentJson_t *content_json,
     return error;
 }
 
+/* This is descriptive metadata, never an alternative playback assignment. */
+const char *content_json_source_kind(const contentJson_t *content_json)
+{
+    const cJSON *assignment = content_json->source_assignment;
+    const cJSON *kind = cJSON_GetObjectItemCaseSensitive(assignment, "kind");
+    const cJSON *source = cJSON_GetObjectItemCaseSensitive(assignment, "source");
+    if (!cJSON_IsObject(assignment) || !cJSON_IsString(kind) || !cJSON_IsString(source) ||
+        !content_json->source || strcmp(source->valuestring, content_json->source) ||
+        (strcmp(kind->valuestring, "audio") && strcmp(kind->valuestring, "radio"))) return NULL;
+    return kind->valuestring;
+}
+
 error_t save_content_json(const char *json_path, contentJson_t *content_json)
 {
     /* retrieve content directory */
@@ -227,6 +241,8 @@ error_t save_content_json(const char *json_path, contentJson_t *content_json)
         cJSON_AddItemToObject(contentJson, "sourceProfilesRevision", cJSON_Duplicate(content_json->source_profiles_revision, true));
     if (content_json->source_profiles)
         cJSON_AddItemToObject(contentJson, "sourceProfiles", cJSON_Duplicate(content_json->source_profiles, true));
+    if (content_json_source_kind(content_json))
+        cJSON_AddItemToObject(contentJson, "sourceAssignment", cJSON_Duplicate(content_json->source_assignment, true));
     cJSON_AddNumberToObject(contentJson, "_version", CONTENT_JSON_VERSION);
 
     char *jsonRaw = cJSON_Print(contentJson);
@@ -492,6 +508,8 @@ void free_content_json(contentJson_t *content_json)
     cJSON_Delete(content_json->source_profiles_version);
     cJSON_Delete(content_json->source_profiles_revision);
     cJSON_Delete(content_json->source_profiles);
+    cJSON_Delete(content_json->source_assignment);
+    content_json->source_assignment = NULL;
     content_json->source_profiles_version = NULL;
     content_json->source_profiles_revision = NULL;
     content_json->source_profiles = NULL;

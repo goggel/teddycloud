@@ -135,6 +135,7 @@ class SourceProfilesAPI(unittest.TestCase):
             path.write_bytes(damaged)
             request('/api/source-profiles?ruid=' + ruid, status=503)
             self.save(ruid, 'audio', 0, {'source': 'lib://new.taf'}, status=503)
+            self.save(ruid, 'audio', 1, {'source': 'lib://new.taf'}, status=503)
             self.assertEqual(path.read_bytes(), damaged)
         path.unlink()
         self.save(ruid, 'audio', 3, {'source': 'lib://new.taf'}, status=409)
@@ -142,6 +143,51 @@ class SourceProfilesAPI(unittest.TestCase):
         saved = self.save(ruid, 'audio', 0, {'source': 'lib://new.taf'})
         self.assertEqual(saved['revision'], 1)
         self.assertEqual(json.loads(path.read_text())['sourceProfilesRevision'], 1)
+
+    def test_explicit_assignment_kind_is_source_bound_and_legacy_assignments_clear_it(self):
+        from urllib.parse import urlencode
+        ruid = '00000000000000c2'
+        path = self.path(ruid)
+        source = 'https://example.org/shared.mp3'
+
+        def assign(values, status=200):
+            req = urllib.request.Request(BASE + '/content/json/set/' + ruid,
+                                         data=urlencode(values).encode(), method='POST')
+            try:
+                response = urllib.request.urlopen(req, timeout=15)
+            except urllib.error.HTTPError as exc:
+                response = exc
+            self.assertEqual(response.status, status, response.read())
+
+        assign({'sourceKind': 'radio'}, 400)
+        assign({'source': source, 'sourceKind': 'podcast'}, 400)
+        self.assertFalse(path.exists(), 'invalid kinds must not create metadata')
+        self.save(ruid, 'audio', 0, {'source': source})
+        self.save(ruid, 'radio', 1, {'source': source, 'displayName': 'Station'})
+        for kind in ['audio', 'radio', 'audio']:
+            assign({'source': source, 'sourceKind': kind})
+            stored = json.loads(path.read_text())
+            self.assertEqual(stored['sourceAssignment'], {'kind': kind, 'source': source})
+            self.assertEqual(stored['_version'], 5)
+            self.assertEqual(request('/api/getTagInfo?ruid=' + ruid)['tagInfo']['sourceKind'], kind)
+            tags = request('/api/getTagIndex')['tags']
+            self.assertEqual(next(tag for tag in tags if tag['ruid'] == ruid)['sourceKind'], kind)
+        assign({'tonie_model': 'TC_KIND', 'hide': 'true'})
+        self.save(ruid, 'radio', 2, {'source': source, 'displayName': 'Renamed'})
+        self.assertEqual(json.loads(path.read_text())['sourceAssignment']['kind'], 'audio')
+        assign({'source': source})  # Legacy same-URL assignment is still explicit.
+        self.assertNotIn('sourceAssignment', json.loads(path.read_text()))
+        self.assertNotIn('sourceKind', request('/api/getTagInfo?ruid=' + ruid)['tagInfo'])
+        assign({'source': source, 'sourceKind': 'radio'})
+        assign({'source': 'lib://replacement.taf'})
+        self.assertNotIn('sourceAssignment', json.loads(path.read_text()))
+        # A different writer cannot accidentally reuse a marker bound to the old URL.
+        stored = json.loads(path.read_text())
+        stored['sourceAssignment'] = {'kind': 'radio', 'source': source}
+        path.write_text(json.dumps(stored))
+        self.assertNotIn('sourceKind', request('/api/getTagInfo?ruid=' + ruid)['tagInfo'])
+        self.save(ruid, 'audio', 3, {'source': 'lib://replacement.taf'})
+        self.assertNotIn('sourceAssignment', json.loads(path.read_text()))
 
     def test_get_save_cannot_mutate_a_profile(self):
         ruid = '00000000000000a6'
@@ -290,6 +336,8 @@ class SourceProfilesAPI(unittest.TestCase):
     def test_z_restart_and_shared_overlay_scope(self):
         ruid = '00000000000000a5'
         self.save(ruid, 'audio', 0, {'source': 'lib://persisted.taf'})
+        urllib.request.urlopen(urllib.request.Request(BASE + '/content/json/set/' + ruid,
+            data=b'source=https%3A%2F%2Fexample.org%2Flive&sourceKind=radio', method='POST'), timeout=15).read()
         os.kill(int(os.environ['TC_SERVER_PID']), signal.SIGTERM)
         time.sleep(.7)
         overlay_config = SANDBOX / 'config/config.overlay.ini'
@@ -319,6 +367,7 @@ class SourceProfilesAPI(unittest.TestCase):
             log.seek(0)
             self.fail('Restart did not become ready: ' + log.read().decode(errors='replace'))
         self.assertEqual(request('/api/source-profiles?ruid=' + ruid)['revision'], 1)
+        self.assertEqual(request('/api/getTagInfo?ruid=' + ruid)['tagInfo']['sourceKind'], 'radio')
         shared = request('/api/source-profiles?ruid=' + ruid + '&overlay=shared-one')
         self.assertEqual(shared['profiles']['audio']['source'], 'lib://persisted.taf')
         self.save(ruid, 'radio', 0, {'source': 'different'}, status=409)

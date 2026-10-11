@@ -55,3 +55,25 @@ sequence is not an atomic transaction. After a partial failure, reload the
 actual assignment and profiles before a deliberate retry. A direct source
 activation currently uses the legacy Content JSON setter and is limited to
 255 UTF-8 bytes even though an inactive stored profile may hold a longer URL.
+
+
+### Explicit direct-source selection
+
+Content JSON remains version 5. An optional `sourceAssignment` object records
+`{"kind":"audio"|"radio","source":"<exact assigned source>"}`. This describes
+the actual `source`; a marker whose source differs is ignored and omitted on the
+next metadata save. Saving inactive profiles never changes this selection.
+
+The existing `/content/json/set/<ruid>` form POST accepts `sourceKind=audio` or
+`sourceKind=radio` only alongside `source`. Invalid kinds or a kind without source
+return 400 before writing. Source and kind are saved under the same lock, including
+same-URL switches. Explicit legacy `source` writes without `sourceKind` clear the
+marker even when the URL is unchanged. Metadata-only writes preserve a valid
+marker. TagInfo and TagIndex expose valid markers as optional `sourceKind`.
+An owning podcast remains the active source; preparation replaces the direct
+assignment, and detach restores its original source and explicit kind. Old records
+without a marker retain conservative profile inference (ambiguous URLs use Audio).
+
+Profile GET/POST never repair malformed, truncated, or unreadable existing
+metadata: they return 503 and leave it intact. A genuinely missing file starts at
+revision zero; a failed revision check does not create it.
