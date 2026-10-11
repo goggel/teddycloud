@@ -166,9 +166,11 @@ cJSON *source_profiles_request(const char *action, const char *overlay, const ch
     }
     podcast_content_lock(path);
     contentJson_t content;
-    error_t error = load_content_json(path, &content, save, settings);
+    /* Revision checks and validation must never repair existing metadata. A
+     * missing file starts at revision zero and is written only after CAS. */
+    error_t error = load_content_json(path, &content, false, settings);
     cJSON *result = NULL;
-    if (error != NO_ERROR && (save || error != ERROR_FILE_NOT_FOUND))
+    if (error != NO_ERROR && error != ERROR_FILE_NOT_FOUND)
         result = problem(status, 503, "Cannot load content metadata");
     else if (save && content.source_profiles_version &&
              !whole_number(content.source_profiles_version, 1, 1))
