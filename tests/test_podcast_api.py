@@ -138,6 +138,26 @@ class PodcastAPI(unittest.TestCase):
             time.sleep(.1)
         self.fail(f'Timeout: {current}')
 
+    def test_detach_restores_explicit_radio_kind(self):
+        ruid = '00000000000000c3'
+        source = 'https://example.org/shared.mp3'
+        from urllib.parse import urlencode
+        body = urlencode({'source': source, 'sourceKind': 'radio', 'live': 'true', 'nocloud': 'true'}).encode()
+        urllib.request.urlopen(urllib.request.Request(BASE + '/content/json/set/' + ruid,
+            data=body, method='POST'), timeout=15).read()
+        saved = request('subscriptions/save', self.config(ruid), status=201)['subscription']
+        current = self.wait(saved)
+        path = SANDBOX / 'data/content/default' / ruid[:8].upper() / (ruid[8:].upper() + '.json')
+        prepared = json.loads(path.read_text())
+        self.assertNotEqual(prepared['source'], source)
+        self.assertNotIn('sourceAssignment', prepared)
+        request('subscriptions/detach', {'id': current['id'], 'expectedRevision': current['revision']})
+        restored = json.loads(path.read_text())
+        self.assertEqual(restored['source'], source)
+        self.assertEqual(restored['sourceAssignment'], {'kind': 'radio', 'source': source})
+        with urllib.request.urlopen(BASE + '/api/getTagInfo?ruid=' + ruid, timeout=15) as response:
+            self.assertEqual(json.load(response)['tagInfo']['sourceKind'], 'radio')
+
     def test_ard_preparation_and_trim_identity(self):
         config = dict(self.config('0000000000000009'), sourceType='ard_audiothek', feedUrl='', ardShowUrl=SHOW_URL,
                       episodeCount=2, episodeTrimSourceKey='ard:' + CORE_ID,
