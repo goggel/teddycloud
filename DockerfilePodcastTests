@@ -13,8 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /buildenv
 COPY . .
 # Frontend checks run in the frontend stage; the finished image retains the
-# built UI and backend test dependencies without duplicating node_modules.
-COPY --from=frontend /usr/local/ /usr/local/
+# built UI and backend test dependencies without duplicating Node tooling.
 COPY --from=frontend /frontend/dist/ contrib/data/www/web/
 RUN make build NO_SANITIZERS=1 -j4 && make test_podcast
 RUN make build PODCAST_SUPPORT=0 BIN_DIR=bin/podcast-disabled NO_SANITIZERS=1 -j4 \
