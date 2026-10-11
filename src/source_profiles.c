@@ -4,9 +4,11 @@
 #include "podcast.h"
 #include "server_helpers.h"
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static cJSON *problem(int *status, int code, const char *message)
 {
@@ -165,10 +167,24 @@ cJSON *source_profiles_request(const char *action, const char *overlay, const ch
         }
     }
     podcast_content_lock(path);
-    contentJson_t content;
+    contentJson_t content = {0};
+    /* fsFileExists treats every stat failure, and directories, as missing.
+     * Only ENOENT may start a new profile record. stat/errno are also supported
+     * by the Windows C runtime used by the existing filesystem port. */
+    char *json_path = custom_asprintf("%s.json", path);
+    struct stat metadata;
+    int stat_result = json_path ? stat(json_path, &metadata) : -1;
+    int stat_error = json_path ? errno : ENOMEM;
+    free(json_path);
     /* Revision checks and validation must never repair existing metadata. A
      * missing file starts at revision zero and is written only after CAS. */
-    error_t error = load_content_json(path, &content, false, settings);
+    error_t error = ERROR_INVALID_FILE;
+    if ((stat_result == 0 && (metadata.st_mode & S_IFMT) == S_IFREG) ||
+        (stat_result != 0 && stat_error == ENOENT))
+    {
+        error = load_content_json(path, &content, false, settings);
+        if (stat_result == 0 && error == ERROR_FILE_NOT_FOUND) error = ERROR_INVALID_FILE;
+    }
     cJSON *result = NULL;
     if (error != NO_ERROR && error != ERROR_FILE_NOT_FOUND)
         result = problem(status, 503, "Cannot load content metadata");
