@@ -1,0 +1,42 @@
+cc -DPODCAST_SUPPORT=1 -DPODCAST_TESTING=0 -O2 -Wall -Wextra -Werror -Iinclude -IcJSON -I/usr/include/aarch64-linux-gnu -I/usr/include/libxml2  tests/test_podcast.c src/podcast_feed.c src/podcast_http.c src/podcast_ard.c src/podcast_trim.c cJSON/cJSON.c -o bin/podcast-unit/tests -lcurl -lxml2  -lm
+bin/podcast-unit/tests
+Podcast parser/selection/network-policy tests passed
+make build PODCAST_SUPPORT=1 PODCAST_TESTING=1 BIN_DIR=bin/podcast-test NO_SANITIZERS=1
+make[1]: Entering directory '/buildenv'
+[ [0;32mPLAT[0m ] [0;36mlinux[0m
+[ [0;32mOSID[0m ] [0;36m"ubuntu"[0m
+[ [0;32mARCH[0m ] [0;36m"aarch64"[0m
+[ [0;32mBITS[0m ] [0;36m64[0m
+[ [0;32mVERN[0m ] [0;36mvX.X.X (unknown-dirty)[0m
+[ [0;32mWVER[0m ] [0;36mvX.X.X (unknown-dirty)[0m
+[ [0;33mDIRS[0m  ] [0;36mworkdirs[0m
+[ [0;33mLINK[0m ] [0;36mbin/podcast-test/teddycloud[0m
+make[1]: Leaving directory '/buildenv'
+TC_SERVER_BIN=/buildenv/bin/podcast-test/teddycloud bash tests/run_podcast_tests.sh
+test_ard_cumulative_and_page_limits (__main__.PodcastAPI.test_ard_cumulative_and_page_limits) ... ok
+test_ard_preparation_and_trim_identity (__main__.PodcastAPI.test_ard_preparation_and_trim_identity) ... ok
+test_ard_resolved_title_is_bound_to_canonical_show (__main__.PodcastAPI.test_ard_resolved_title_is_bound_to_canonical_show) ... ok
+test_ard_show_selection_and_source_identity (__main__.PodcastAPI.test_ard_show_selection_and_source_identity) ... ok
+test_capabilities_and_validation (__main__.PodcastAPI.test_capabilities_and_validation) ... ok
+test_decoder_partial_frames_failures_and_cancellation (__main__.PodcastAPI.test_decoder_partial_frames_failures_and_cancellation) ... ok
+test_discovery_and_manual_feed_fallback (__main__.PodcastAPI.test_discovery_and_manual_feed_fallback) ... ok
+test_display_name_is_bound_before_preparation_and_survives_legacy_update (__main__.PodcastAPI.test_display_name_is_bound_before_preparation_and_survives_legacy_update) ... ok
+test_feed_info (__main__.PodcastAPI.test_feed_info) ... ok
+test_placement_always_on_with_legacy_false_and_zero_interval (__main__.PodcastAPI.test_placement_always_on_with_legacy_false_and_zero_interval) ... ok
+test_prepared_audio_refresh_failure_and_detach (__main__.PodcastAPI.test_prepared_audio_refresh_failure_and_detach) ... ok
+test_protocol_pins_and_periodic_refresh (__main__.PodcastAPI.test_protocol_pins_and_periodic_refresh) ... ok
+test_revision_overlay_and_manual_source_ownership (__main__.PodcastAPI.test_revision_overlay_and_manual_source_ownership) ... ok
+test_trim_validation_and_request_boundaries (__main__.PodcastAPI.test_trim_validation_and_request_boundaries) ... ok
+test_trimming_pcm_signal_and_generation_metadata (__main__.PodcastAPI.test_trimming_pcm_signal_and_generation_metadata) ... ok
+test_y_provider_rate_budgets (__main__.PodcastAPI.test_y_provider_rate_budgets) ... ok
+test_z_restart_and_publication_recovery (__main__.PodcastAPI.test_z_restart_and_publication_recovery) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 12.853s
+
+OK
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.844s
+
+OK
