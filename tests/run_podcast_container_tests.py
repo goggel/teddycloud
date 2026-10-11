@@ -82,6 +82,8 @@ def main():
             run('exec', container, 'sh', '-c',
                 '! command -v node && ! command -v python3 && '
                 '! grep -a -q TC_PODCAST_FIXTURES /usr/local/bin/teddycloud && '
+                '! grep -a -q pause-before-save /usr/local/bin/teddycloud && '
+                '! grep -a -q pause-before-move /usr/local/bin/teddycloud && '
                 'ldd /usr/local/bin/teddycloud | grep libcurl && '
                 'ldd /usr/local/bin/teddycloud | grep libxml2')
             try:

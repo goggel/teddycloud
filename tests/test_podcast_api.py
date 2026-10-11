@@ -1,5 +1,6 @@
 """Disposable-server integration tests. Never defaults to a household instance."""
 import hashlib
+import concurrent.futures
 import array
 import math
 import json
@@ -379,6 +380,83 @@ class PodcastAPI(unittest.TestCase):
             if saved:
                 current = request('subscriptions', query='?ruid=' + ruid)['subscriptions'][0]
                 request('subscriptions/detach', {'id': current['id'], 'expectedRevision': current['revision']})
+
+    def test_migrate_content_rejects_stale_source_without_moving_audio(self):
+        prepared_ruid = '00000000000000c1'
+        migrate_ruid = '00000000000000c2'
+        saved = request('subscriptions/save', dict(self.config(prepared_ruid), episodeCount=1),
+                        status=201)['subscription']
+        content = SANDBOX / 'data/content/default/00000000/000000C2'
+        metadata = Path(str(content) + '.json')
+        pause = Path(str(metadata) + '.pause-before-move')
+        ready_marker = Path(str(metadata) + '.move-ready')
+        release = Path(str(metadata) + '.move-release')
+        try:
+            ready = self.wait(saved)
+            prepared_json = SANDBOX / 'data/content/default/00000000/000000C1.json'
+            library_taf = SANDBOX / 'data/library' / json.loads(prepared_json.read_text())['source'][6:]
+            shutil.copyfile(library_taf, content)
+            metadata.write_text(json.dumps({'_version': 5, 'source': '', 'live': False,
+                                            'nocloud': False, 'cloud_override': False}))
+            save_profile(migrate_ruid, 'audio', 0, {'source': 'lib://earlier.taf'})
+            pause.touch()
+
+            def migrate():
+                call = urllib.request.Request(BASE + '/api/migrateContent2Lib',
+                    data=('ruid=' + migrate_ruid + '&libroot=true').encode(), method='POST')
+                try:
+                    response = urllib.request.urlopen(call, timeout=15)
+                except urllib.error.HTTPError as exc:
+                    response = exc
+                return response.status
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(migrate)
+                deadline = time.monotonic() + 5
+                while not ready_marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(ready_marker.exists(), 'migrate request did not reach fixture pause')
+                setter = urllib.request.Request(BASE + '/content/json/set/' + migrate_ruid,
+                    data=b'source=lib%3A%2F%2Fnewer.taf&live=false&nocloud=false', method='POST')
+                urllib.request.urlopen(setter, timeout=15).read()
+                save_profile(migrate_ruid, 'radio', 1,
+                             {'source': 'https://example.org/newer', 'displayName': 'Newer station'})
+                release.touch()
+                self.assertNotEqual(pending.result(timeout=10), 200)
+
+            current = json.loads(metadata.read_text())
+            self.assertEqual(current['source'], 'lib://newer.taf')
+            self.assertFalse(current['live'])
+            self.assertFalse(current['nocloud'])
+            self.assertFalse(current['cloud_override'])
+            self.assertEqual(current['sourceProfilesRevision'], 2)
+            self.assertEqual(current['sourceProfiles']['radio']['displayName'], 'Newer station')
+            self.assertTrue(content.exists(), 'stale migrate moved or deleted original TAF')
+
+            success_ruid = '00000000000000c3'
+            success_content = SANDBOX / 'data/content/default/00000000/000000C3'
+            success_metadata = Path(str(success_content) + '.json')
+            shutil.copyfile(library_taf, success_content)
+            success_metadata.write_text(json.dumps({'_version': 5, 'source': '',
+                                                     'tonie_model': 'existing-model'}))
+            save_profile(success_ruid, 'radio', 0,
+                         {'source': 'https://example.org/saved', 'displayName': 'Saved station'})
+            success_call = urllib.request.Request(BASE + '/api/migrateContent2Lib',
+                data=('ruid=' + success_ruid + '&libroot=true').encode(), method='POST')
+            with urllib.request.urlopen(success_call, timeout=15) as response:
+                self.assertEqual(response.status, 200)
+            moved = json.loads(success_metadata.read_text())
+            self.assertTrue(moved['source'].startswith('lib://'))
+            self.assertEqual(moved['tonie_model'], 'existing-model')
+            self.assertEqual(moved['sourceProfilesRevision'], 1)
+            self.assertEqual(moved['sourceProfiles']['radio']['displayName'], 'Saved station')
+            self.assertFalse(success_content.exists())
+        finally:
+            release.touch()
+            for marker in (pause, ready_marker, release):
+                marker.unlink(missing_ok=True)
+            current = request('subscriptions', query='?ruid=' + prepared_ruid)['subscriptions'][0]
+            request('subscriptions/detach', {'id': current['id'], 'expectedRevision': current['revision']})
 
     def test_display_name_is_bound_before_preparation_and_survives_legacy_update(self):
         ruid = '00000000000000b1'

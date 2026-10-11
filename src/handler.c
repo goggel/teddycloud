@@ -1272,6 +1272,23 @@ error_t moveTAF2Lib(tonie_info_t *tonieInfo, settings_t *settings, bool_t rootDi
             }
             if (moveToLibrary)
             {
+#if PODCAST_TESTING
+                /* Hold an actual migrate request after its old assignment was
+                 * read, so a concurrent source replacement can be tested. */
+                char *pause = custom_asprintf("%s.pause-before-move", tonieInfo->jsonPath);
+                if (pause && fsFileExists(pause))
+                {
+                    char *ready = custom_asprintf("%s.move-ready", tonieInfo->jsonPath);
+                    char *release = custom_asprintf("%s.move-release", tonieInfo->jsonPath);
+                    FsFile *signal = ready ? fsOpenFile(ready, FS_FILE_MODE_WRITE) : NULL;
+                    if (signal) fsCloseFile(signal);
+                    for (unsigned elapsed = 0; release && elapsed < 5000 && !fsFileExists(release); elapsed += 10)
+                        osDelayTask(10);
+                    osFreeMem(ready);
+                    osFreeMem(release);
+                }
+                osFreeMem(pause);
+#endif
                 size_t jsonPathLen = osStrlen(tonieInfo->jsonPath);
                 char *assignmentPath = jsonPathLen > 5 ? custom_asprintf("%.*s", (int)(jsonPathLen - 5), tonieInfo->jsonPath) : NULL;
                 error = assignmentPath ? move_content_json_source(assignmentPath, tonieInfo->json.source,
@@ -1279,7 +1296,6 @@ error_t moveTAF2Lib(tonie_info_t *tonieInfo, settings_t *settings, bool_t rootDi
                 osFreeMem(assignmentPath);
                 if (error == NO_ERROR)
                 {
-                    tonieInfo->json._updated = false;
                     TRACE_INFO(">> Successfully set to library %s\r\n", libraryShortPath);
                 }
                 else

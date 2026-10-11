@@ -1,5 +1,6 @@
 """Source profile API checks against the disposable with_server.sh instance."""
 import concurrent.futures
+import http.client
 import json
 import os
 from pathlib import Path
@@ -239,14 +240,20 @@ class SourceProfilesAPI(unittest.TestCase):
         request('/api/source-profiles/save', raw=b'{}' + b' ' * (65536 - 2), status=400)
         request('/api/source-profiles/save', raw=b'{"ruid":"bad\x00id"}', status=400)
         request('/api/source-profiles/save', raw=b'{"ruid":"a\\u0000b"}', status=400)
-        chunked = urllib.request.Request(BASE + '/api/source-profiles/save',
-            data=iter([b'{', b'}']), headers={'Content-Type': 'application/json'})
+        from urllib.parse import urlsplit
+        server = urlsplit(BASE)
+        connection = http.client.HTTPConnection(server.hostname, server.port, timeout=15)
         try:
-            urllib.request.urlopen(chunked, timeout=15)
-        except urllib.error.HTTPError as exc:
-            self.assertEqual(exc.status, 413)
-        else:
-            self.fail('Chunked profile POST was accepted')
+            connection.putrequest('POST', '/api/source-profiles/save')
+            connection.putheader('Content-Type', 'application/json')
+            connection.putheader('Transfer-Encoding', 'chunked')
+            connection.endheaders()
+            response = connection.getresponse()
+            payload = response.read()
+            self.assertEqual(response.status, 413, payload)
+            self.assertIn('error', json.loads(payload))
+        finally:
+            connection.close()
         self.save(ruid, 'audio', 0, {'source': 'lib://unchanged.taf'})
         path = self.path(ruid)
         stored = json.loads(path.read_text())
