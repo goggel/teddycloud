@@ -1586,6 +1586,8 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
             load_content_json(path, &content, true, get_settings_ovl(overlay ? overlay : ""));
             cJSON *original = cJSON_AddObjectToObject(s, "original");
             str(original, "source", content.source);
+            if (content_json_source_kind(&content))
+                cJSON_AddItemToObject(original, "sourceAssignment", cJSON_Duplicate(content.source_assignment, true));
             boolean(original, "live", content.live);
             boolean(original, "nocloud", content.nocloud);
             boolean(original, "cloud_override", content.cloud_override);
@@ -1648,6 +1650,8 @@ static cJSON *request_impl(const char *action, const char *overlay, const char *
             cJSON *original = cJSON_GetObjectItemCaseSensitive(s, "original");
             free(content.source);
             content.source = strdup(podcast_string(original, "source"));
+            cJSON_Delete(content.source_assignment);
+            content.source_assignment = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(original, "sourceAssignment"), true);
             content.live = yes(original, "live");
             content.nocloud = yes(original, "nocloud");
             content.cloud_override = yes(original, "cloud_override");

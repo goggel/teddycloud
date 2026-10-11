@@ -36,6 +36,7 @@ typedef struct
     cJSON *source_profiles_version;
     cJSON *source_profiles_revision;
     cJSON *source_profiles;
+    cJSON *source_assignment;
     /* Original on-disk values for merging a long-lived legacy metadata edit. */
     cJSON *_persisted_baseline;
 
@@ -82,6 +83,7 @@ typedef struct
 
 error_t load_content_json(const char *content_path, contentJson_t *content_json, bool create_if_missing, settings_t *settings);
 error_t save_content_json(const char *json_path, contentJson_t *content_json);
+const char *content_json_source_kind(const contentJson_t *content_json);
 error_t save_content_json_legacy(const char *json_path, contentJson_t *modified, settings_t *settings);
 error_t move_content_json_source(const char *content_path, const char *expected_source,
                                  const char *new_source, const char *from_file,

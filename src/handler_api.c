@@ -4819,6 +4819,16 @@ error_t handleApiContentJsonSet(HttpConnection *connection, const char_t *uri, c
         return error;
     }
 
+    char source_kind[32];
+    char requested_source[256];
+    bool_t has_kind = queryGet(post_data, "sourceKind", source_kind, sizeof(source_kind));
+    bool_t has_source = queryGet(post_data, "source", requested_source, sizeof(requested_source));
+    if (has_kind && (!has_source || (strcmp(source_kind, "audio") && strcmp(source_kind, "radio"))))
+    {
+        osFreeMem(contentPath);
+        return ERROR_INVALID_REQUEST;
+    }
+
     podcast_content_lock(contentPath);
     contentJson_t content_json;
     load_content_json(contentPath, &content_json, true, client_ctx->settings);
@@ -4828,6 +4838,17 @@ error_t handleApiContentJsonSet(HttpConnection *connection, const char_t *uri, c
     bool_t source_changed = false;
     if (queryGet(post_data, "source", item_data, sizeof(item_data)))
     {
+        /* An explicit legacy assignment clears the marker even for the same
+         * URL. Selection and playback source commit under one Content lock. */
+        cJSON_Delete(content_json.source_assignment);
+        content_json.source_assignment = NULL;
+        if (has_kind)
+        {
+            content_json.source_assignment = cJSON_CreateObject();
+            cJSON_AddStringToObject(content_json.source_assignment, "kind", source_kind);
+            cJSON_AddStringToObject(content_json.source_assignment, "source", item_data);
+        }
+        updated = true;
         if (osStrcmp(item_data, content_json.source))
         {
             osFreeMem(content_json.source);
@@ -4991,6 +5012,8 @@ error_t getTagInfoJson(char ruid[17], cJSON *jsonTarget, client_ctx_t *client_ct
             cJSON_AddBoolToObject(jsonEntry, "hide", tafInfo->json.hide);
             cJSON_AddBoolToObject(jsonEntry, "claimed", tafInfo->json.claimed);
             cJSON_AddStringToObject(jsonEntry, "source", tafInfo->json.source);
+            const char *source_kind = content_json_source_kind(&tafInfo->json);
+            if (source_kind) cJSON_AddStringToObject(jsonEntry, "sourceKind", source_kind);
 
             cJSON *tracksArray = cJSON_AddArrayToObject(jsonEntry, "trackSeconds");
             for (size_t i = 0; i < tafInfo->additional.track_positions.count; i++)
