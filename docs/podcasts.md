@@ -58,6 +58,22 @@ locally, then Save; cut edits do not fetch another preview. Cancel discards edit
 The preview's duration is an estimate; prepared episodes display measured audio
 duration and the cuts actually applied to the last successful generation.
 
+**Listen to recent episodes** loads up to five newest eligible audio episodes,
+independently of the requested Tonie episode count and playback order. Select
+**Listen** on an episode to load its audio. The browser player shows positions in
+the original recording, can skip five seconds, hear a short passage around either
+cut, and play the retained interval. Choose whether captures edit the podcast
+defaults or this episode's override. An episode override is ignored while
+auditioning defaults. **Use podcast defaults for this episode** removes its
+override. Listening, seeking and switching episodes do not prepare or save audio.
+
+The browser reads the public episode URL directly. Browser codec support,
+upstream availability, seeking support and HTTPS pages containing HTTP audio can
+prevent playback or accurate seeking; use the numeric cut fields when that
+happens. Feed durations are estimates, while the player uses the loaded media's
+duration. Dynamic ads can shift boundaries, and prepared audio is measured again
+by the server. The player is a listening aid, not automatic cut detection.
+
 The decoder trims 48 kHz stereo samples before TAF encoding. End cuts require
 two decode passes over the same cached input: one to count frames and one to
 encode the retained interval. This costs additional preparation time while using
