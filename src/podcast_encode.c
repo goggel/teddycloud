@@ -240,12 +240,11 @@ bool podcast_encode(const podcast_encode_input_t *inputs, size_t count, const ch
         }
         else
         {
-            if (input->trim_start_seconds > PODCAST_MAX_TRIM)
+            if (!podcast_trim_frames(input->trim_start_seconds, &first))
             {
                 ok = false;
                 break;
             }
-            first = (uint64_t)input->trim_start_seconds * PODCAST_SAMPLE_RATE;
         }
         uint64_t measured = 0;
         ok = decode(input->path, taf, episode > 0, first, last, maximum - source_frames, output, cancel, deadline,

@@ -5,11 +5,18 @@
 #include <stdio.h>
 #include <string.h>
 
-bool podcast_trim_window(uint64_t total, uint32_t start, uint32_t end, uint64_t *first, uint64_t *last)
+bool podcast_trim_frames(double seconds, uint64_t *frames)
 {
-    if (start > PODCAST_MAX_TRIM || end > PODCAST_MAX_TRIM)
+    if (!isfinite(seconds) || seconds < 0 || seconds > PODCAST_MAX_TRIM)
         return false;
-    uint64_t a = (uint64_t)start * PODCAST_SAMPLE_RATE, b = (uint64_t)end * PODCAST_SAMPLE_RATE;
+    *frames = (uint64_t)llround(seconds * PODCAST_SAMPLE_RATE);
+    return true;
+}
+bool podcast_trim_window(uint64_t total, double start, double end, uint64_t *first, uint64_t *last)
+{
+    uint64_t a, b;
+    if (!podcast_trim_frames(start, &a) || !podcast_trim_frames(end, &b))
+        return false;
     if (b >= total || a >= total - b)
         return false;
     *first = a;
@@ -30,7 +37,7 @@ static bool seconds(const cJSON *o, const char *key, bool optional)
     cJSON *v = cJSON_GetObjectItemCaseSensitive(o, key);
     return !v ? optional
               : cJSON_IsNumber(v) && isfinite(v->valuedouble) && v->valuedouble >= 0 &&
-                    v->valuedouble <= PODCAST_MAX_TRIM && floor(v->valuedouble) == v->valuedouble;
+                    v->valuedouble <= PODCAST_MAX_TRIM;
 }
 bool podcast_trim_valid(const cJSON *config, char *error, size_t size)
 {
@@ -56,7 +63,7 @@ bool podcast_trim_valid(const cJSON *config, char *error, size_t size)
     }
     return true;
 fail:
-    snprintf(error, size, "Cuts must be whole seconds from 0 to 21600; use at most 50 unique episode overrides");
+    snprintf(error, size, "Cuts must be finite seconds from 0 to 21600; use at most 50 unique episode overrides");
     return false;
 }
 void podcast_trim_defaults(cJSON *config)
@@ -70,7 +77,7 @@ void podcast_trim_defaults(cJSON *config)
     if (!cJSON_GetObjectItemCaseSensitive(config, "episodeTrimSourceKey"))
         cJSON_AddStringToObject(config, "episodeTrimSourceKey", "");
 }
-void podcast_trim_effective(const cJSON *config, const char *identity, uint32_t *start, uint32_t *end)
+void podcast_trim_effective(const cJSON *config, const char *identity, double *start, double *end)
 {
     const cJSON *selected = config;
     cJSON *item;
@@ -80,15 +87,15 @@ void podcast_trim_effective(const cJSON *config, const char *identity, uint32_t 
         selected = item;
         break;
     }
-    *start = (uint32_t)podcast_number(selected, "trimStartSeconds");
-    *end = (uint32_t)podcast_number(selected, "trimEndSeconds");
+    *start = podcast_number(selected, "trimStartSeconds");
+    *end = podcast_number(selected, "trimEndSeconds");
 }
 void podcast_trim_preview(cJSON *preview, const cJSON *config)
 {
     cJSON *ep, *warnings = cJSON_GetObjectItemCaseSensitive(preview, "warnings");
     cJSON_ArrayForEach(ep, cJSON_GetObjectItemCaseSensitive(preview, "episodes"))
     {
-        uint32_t start, end;
+        double start, end;
         podcast_trim_effective(config, podcast_string(ep, "identity"), &start, &end);
         cJSON_DeleteItemFromObjectCaseSensitive(ep, "trimStartSeconds");
         cJSON_DeleteItemFromObjectCaseSensitive(ep, "trimEndSeconds");
