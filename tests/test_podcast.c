@@ -4,6 +4,7 @@
 #include "podcast_trim.h"
 #include <arpa/inet.h>
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,11 +68,47 @@ static void test_display_name_validation(void)
     assert(!podcast_config_valid(config, error, sizeof(error)));
     cJSON_Delete(config);
 }
+static void test_fractional_trim(void)
+{
+    uint64_t frames, first, last;
+    assert(podcast_trim_frames(21.5, &frames) && frames == 1032000);
+    assert(podcast_trim_frames(0.001, &frames) && frames == 48);
+    assert(podcast_trim_frames(0.00002, &frames) && frames == 1);
+    const double invalid[] = {-0.001, NAN, INFINITY, 21600.001};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+    {
+        assert(!podcast_trim_frames(invalid[i], &frames));
+        assert(!podcast_trim_window(12 * 48000, invalid[i], 0, &first, &last));
+        assert(!podcast_trim_window(12 * 48000, 0, invalid[i], &first, &last));
+    }
+    assert(podcast_trim_window(12 * 48000, 3.125, 3.25, &first, &last));
+    assert(first == 150000 && last == 420000);
+    assert(!podcast_trim_window(12 * 48000, 5.5, 6.5, &first, &last));
+
+    cJSON *config = cJSON_Parse("{\"trimStartSeconds\":21.5,\"trimEndSeconds\":0.125,"
+                                "\"episodeTrims\":[{\"identity\":\"a\",\"trimStartSeconds\":0.001,"
+                                "\"trimEndSeconds\":1.75}]}");
+    char error[256];
+    double start, end;
+    assert(config && podcast_trim_valid(config, error, sizeof(error)));
+    podcast_trim_effective(config, "b", &start, &end);
+    assert(start == 21.5 && end == 0.125);
+    podcast_trim_effective(config, "a", &start, &end);
+    assert(start == 0.001 && end == 1.75);
+    cJSON *preview = cJSON_Parse("{\"episodes\":[{\"identity\":\"b\",\"durationSeconds\":30}],\"warnings\":[]}");
+    podcast_trim_preview(preview, config);
+    cJSON *episode = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(preview, "episodes"), 0);
+    assert(podcast_number(episode, "trimStartSeconds") == 21.5);
+    assert(podcast_number(episode, "estimatedTrimmedDurationSeconds") == 8.375);
+    cJSON_Delete(preview);
+    cJSON_Delete(config);
+}
 int main(void)
 {
     assert(podcast_http_init());
     test_feed_media();
     test_display_name_validation();
+    test_fractional_trim();
     char identifier[64];
     assert(podcast_ard_identifier("https://ardaudiothek.de/sendung/show/23667030/?share=1", identifier));
     assert(!strcmp(identifier, "23667030"));

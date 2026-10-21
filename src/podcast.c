@@ -746,8 +746,8 @@ static void prepare(cJSON *job)
     for (size_t i = 0; i < count; i++)
     {
         cJSON *episode = cJSON_GetArrayItem(episodes, (int)i);
-        encoding[i] = (podcast_encode_input_t){inputs[i], (uint32_t)podcast_number(episode, "trimStartSeconds"),
-                                               (uint32_t)podcast_number(episode, "trimEndSeconds")};
+        encoding[i] = (podcast_encode_input_t){inputs[i], podcast_number(episode, "trimStartSeconds"),
+                                               podcast_number(episode, "trimEndSeconds")};
     }
     if (!podcast_encode(encoding, count, output, audio_id, &job_cancel, durations, error, sizeof(error)))
         goto done;

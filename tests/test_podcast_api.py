@@ -742,7 +742,7 @@ class PodcastAPI(unittest.TestCase):
         request('subscriptions/detach', {'id': saved['id'], 'expectedRevision': updated['revision']})
     def test_trim_validation_and_request_boundaries(self):
         config = self.config('0000000000000008', enabled=False)
-        for value in [-1, 0.5, '3', True, None, 21601]:
+        for value in [-1, '3', True, None, 21600.001, 21601]:
             request('subscriptions/save', dict(config, trimStartSeconds=value), status=400)
         request('subscriptions/save', dict(config, sourceType='unknown'), status=400)
         override = dict(identity='i' * 512, trimStartSeconds=0, trimEndSeconds=0)
@@ -752,14 +752,15 @@ class PodcastAPI(unittest.TestCase):
         request('subscriptions/save', dict(config, episodeTrims=[dict(override, identity='i'*513)]), status=400)
         request('subscriptions/save', dict(config, episodeTrims=[dict(override, identity=str(i)) for i in range(51)]), status=400)
         request('subscriptions/save', dict(config, episodeTrims=[override], episodeTrimSourceKey='rss:https://other.example/feed'), status=409)
-        large = dict(config, trimStartSeconds=3, trimEndSeconds=3, episodeTrimSourceKey='rss:' + FEED,
+        large = dict(config, trimStartSeconds=3.125, trimEndSeconds=3.75, episodeTrimSourceKey='rss:' + FEED,
                      episodeTrims=[dict(override, identity=str(i) + 'x' * 509) for i in range(50)], padding='')
         large['padding'] = 'x' * (65536 - len(json.dumps(large).encode()))
         self.assertEqual(len(json.dumps(large).encode()), 65536)
         saved = request('subscriptions/save', large, status=201)['subscription']
         self.assertEqual(len(saved['episodeTrims']), 50)
         legacy = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision']))['subscription']
-        self.assertEqual(legacy['trimStartSeconds'], 3)
+        self.assertEqual(legacy['trimStartSeconds'], 3.125)
+        self.assertEqual(legacy['trimEndSeconds'], 3.75)
         self.assertEqual(len(legacy['episodeTrims']), 50)
         request('subscriptions/save', dict(config, id=legacy['id'], expectedRevision=legacy['revision'], feedUrl='https://other.example/feed'), status=409)
         request('subscriptions/detach', {'id':legacy['id'], 'expectedRevision':legacy['revision']})
@@ -781,12 +782,17 @@ class PodcastAPI(unittest.TestCase):
         mapping_path.write_text(json.dumps(mapping))
         items = ''.join('<item><guid>' + name + '</guid><title>' + name + '</title><duration>1</duration><enclosure type="audio/wav" url="https://podcasts.example.org/' + name + '.wav"/></item>' for name in ['tone-a', 'tone-b'])
         (FIXTURES / 'feed.xml').write_text('<rss><channel><title>Tones</title>' + items + '</channel></rss>')
-        config = dict(self.config('0000000000000007'), episodeCount=2, trimStartSeconds=3, trimEndSeconds=3,
-                      episodeTrimSourceKey='rss:' + FEED, episodeTrims=[dict(identity='tone-a', trimStartSeconds=0, trimEndSeconds=3)])
+        config = dict(self.config('0000000000000007'), episodeCount=2, trimStartSeconds=3.125, trimEndSeconds=3.25,
+                      episodeTrimSourceKey='rss:' + FEED, episodeTrims=[dict(identity='tone-a', trimStartSeconds=0, trimEndSeconds=3.5)])
+        preview = request('preview', config)
+        self.assertEqual([e['trimEndSeconds'] for e in preview['episodes']], [3.5, 3.25])
         saved = request('subscriptions/save', config, status=201)['subscription']
+        self.assertEqual(saved['trimStartSeconds'], 3.125)
+        self.assertEqual(saved['episodeTrims'][0]['trimEndSeconds'], 3.5)
         try:
             ready = self.wait(saved)
-            self.assertEqual([e['trimmedDurationSeconds'] for e in ready['episodes']], [9, 6])
+            self.assertEqual([e['trimStartSeconds'] for e in ready['episodes']], [0, 3.125])
+            self.assertEqual([e['trimmedDurationSeconds'] for e in ready['episodes']], [8.5, 5.625])
             content = SANDBOX / 'data/content/default/00000000/00000007.json'
             def audio_path():
                 return SANDBOX / 'data/library' / json.loads(content.read_text())['source'][6:]
@@ -794,7 +800,7 @@ class PodcastAPI(unittest.TestCase):
             self.assertEqual(len(taf_header(path)[1]), 2)
             decoded = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'ogg', '-i', 'pipe:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', 'pipe:1'], input=path.read_bytes()[4096:], stdout=subprocess.PIPE, check=True).stdout
             pcm = array.array('f'); pcm.frombytes(decoded)
-            self.assertAlmostEqual(len(pcm)/48000, 15, delta=.4)
+            self.assertAlmostEqual(len(pcm)/48000, 14.125, delta=.4)
             def energy(at, frequency):
                 values = pcm[int(at*48000):int(at*48000)+4800]
                 return sum(v*math.cos(2*math.pi*frequency*i/48000) for i,v in enumerate(values))**2 + sum(v*math.sin(2*math.pi*frequency*i/48000) for i,v in enumerate(values))**2
@@ -809,7 +815,7 @@ class PodcastAPI(unittest.TestCase):
             saved = request('subscriptions/save', dict(config, id=saved['id'], expectedRevision=saved['revision']))['subscription']
             changed = self.wait(saved)
             self.assertGreater(changed['audioId'], ready['audioId'])
-            self.assertEqual([e['trimmedDurationSeconds'] for e in changed['episodes']], [9, 9])
+            self.assertEqual([e['trimmedDurationSeconds'] for e in changed['episodes']], [8.5, 8.875])
             previous_source = json.loads(content.read_text())['source']
             previous_hash = hashlib.sha1(audio_path().read_bytes()).hexdigest()
             # Removing an entire episode fails the whole job and preserves applied metadata.
@@ -818,7 +824,7 @@ class PodcastAPI(unittest.TestCase):
             self.assertEqual(json.loads(content.read_text())['source'], previous_source)
             self.assertEqual(hashlib.sha1(audio_path().read_bytes()).hexdigest(), previous_hash)
             self.assertEqual(failed['episodes'][0]['trimStartSeconds'], 0)
-            self.assertEqual(failed['episodes'][0]['trimmedDurationSeconds'], 9)
+            self.assertEqual(failed['episodes'][0]['trimmedDurationSeconds'], 8.5)
         finally:
             request('subscriptions/detach', {'id':saved['id'], 'expectedRevision':saved['revision']})
             feed([1, 2, 3])
@@ -920,7 +926,7 @@ class PodcastAPI(unittest.TestCase):
             status, _, body = box.request('GET', '/v1/content/' + self.pinned_subscription['ruid'], headers={'Range': 'bytes=4096-'})
             self.assertEqual(status, 206); self.assertEqual(body, self.pinned_audio[4096:])
         feed([1, 2, 3])
-        config = self.config('0000000000000005')
+        config = dict(self.config('0000000000000005'), trimStartSeconds=0.125, trimEndSeconds=0.25)
         saved = request('subscriptions/save', config, status=201)['subscription']
         first = self.wait(saved)
         content = SANDBOX / 'data/content/default/00000000/00000005.json'
@@ -940,7 +946,7 @@ class PodcastAPI(unittest.TestCase):
             audio_id, chapters = taf_header(audio)
             self.assertEqual(len(chapters), count)
             self.assertEqual(audio_id, recovered['audioId'])
-            self.assertTrue(all('trimmedDurationSeconds' in e and e['trimStartSeconds'] == 0 and e['trimEndSeconds'] == 0 for e in recovered['episodes']))
+            self.assertTrue(all('trimmedDurationSeconds' in e and e['trimStartSeconds'] == 0.125 and e['trimEndSeconds'] == 0.25 for e in recovered['episodes']))
             self.assertGreater(audio_id, first['audioId'])
         # Manual assignment must win against future jobs.
         req = urllib.request.Request(BASE + '/content/json/set/' + saved['ruid'], data=b'source=')

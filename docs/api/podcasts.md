@@ -61,7 +61,8 @@ an old name is cleared. `title` remains the last successfully prepared title.
 Old clients may omit the new fields. Capabilities advertise
 `displayNameSupported` and `placementRefreshAlways`.
 
-Cuts are integer seconds, 0–21,600. Each `episodeTrims` entry contains a unique,
+Cuts are finite seconds, 0–21,600; fractional values such as `21.5` are supported.
+The encoder rounds each cut to the nearest 48 kHz PCM sample. Each `episodeTrims` entry contains a unique,
 nonempty `identity` (up to 512 UTF-8 bytes, no controls) and both
 `trimStartSeconds` and `trimEndSeconds`. At most 50 entries are retained,
 including inactive episodes. Overrides replace both defaults; zero is explicit.

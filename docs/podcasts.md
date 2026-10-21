@@ -45,7 +45,9 @@ Normal playback resume is retained; listening history is not tracked per episode
 
 ## Intro and outro cuts
 
-Set default start/end cuts in whole seconds (0–21,600 per side). Preview an
+Set default start/end cuts in seconds (0–21,600 per side), including fractions
+such as 21.5. The editor and player capture use up to three decimal places; the
+encoder rounds cuts to the nearest 48 kHz PCM sample. Preview an
 episode selection to override both cuts for individual episodes. Zero is an
 explicit override; removing an override restores the current defaults. Stored
 overrides remain available even when that episode leaves the latest selection.
@@ -57,13 +59,18 @@ the same show share a canonical identity after preview resolves them. Edit cuts
 locally, then Save; cut edits do not fetch another preview. Cancel discards edits.
 The preview's duration is an estimate; prepared episodes display measured audio
 duration and the cuts actually applied to the last successful generation.
+Durations and cut summaries use readable hours, minutes and seconds (for example,
+`1h 30min 15sec` or `33min 10sec`), with fractional seconds preserved for precise cuts.
+The currently prepared episodes are collapsed until their heading is clicked.
 
 **Listen to recent episodes** loads up to five newest eligible audio episodes,
 independently of the requested Tonie episode count and playback order. Select
-**Listen** on an episode to load its audio. The browser player shows positions in
-the original recording, can skip five seconds, hear a short passage around either
-cut, and play the retained interval. Choose whether captures edit the podcast
-defaults or this episode's override. An episode override is ignored while
+**Listen** on an episode to load its player directly below that episode. The
+browser player shows readable positions in the original recording with up to
+millisecond precision, can skip five seconds,
+start a short preview exactly at the configured intro cut, hear a short passage
+around the outro cut, and play the retained interval. Choose whether captures
+edit the podcast defaults or this episode's override. An episode override is ignored while
 auditioning defaults. **Use podcast defaults for this episode** removes its
 override. Listening, seeking and switching episodes do not prepare or save audio.
 
