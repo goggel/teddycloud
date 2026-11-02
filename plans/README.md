@@ -6,6 +6,48 @@ Prepared and extended by the improve skill on 2026-10-09. The user selected both
 | --- | --- | --- | --- | --- | --- |
 | [001](001-prepared-podcast-tonies.md) | Search/subscribe to RSS and ARD Audiothek shows; apply podcast trim defaults and episode overrides; prepare chaptered audio inside the single TeddyCloud container | P1 | L, original foundation approximately 2–3 weeks; ARD/trim extension approximately 5–10 engineering days, plus hardware acceptance | None | IN PROGRESS: software implemented and automated gates passed; hardware/browser acceptance pending |
 | [002](002-four-audio-sources.md) | Four separate source editors with persistent settings; immediately retain selected podcast/ARD names; always check enabled podcast/ARD subscriptions on placement | P1 | L, approximately 8–12 engineering days plus hardware acceptance | Implemented software foundation from 001; its pending hardware gate does not block development | IN PROGRESS: integrated and pushed to both origins on `feature/prepared-podcast-tonies` at user request; all automated gates pass, browser/device acceptance open. Preview stopped. |
+| [003](003-four-source-review-fixes.md) | Protect damaged metadata, lock bootstrap editing, reconcile detach, remember explicit Radio/Audio selection | P1/P2 | M | Implemented software from 002 | DONE: all four software fixes independently verified and integrated at backend `2d0cc0f1` / frontend `e94f205`. Included in the user-authorized 004 feature-branch push on 2026-10-12. Parent browser/device acceptance stays open. |
+| [004](004-recent-episode-cut-preview.md) | Listen to the latest five RSS/ARD episodes, audition intro/outro boundaries, and capture draft defaults or episode overrides | P1 | M, approximately 3–5 engineering days | Implemented 001/002; 003 integrated and drift reconciled | IN PROGRESS: software APPROVED; 202 tests and automated gates pass. Integrated and pushed to both origins on `feature/prepared-podcast-tonies`: frontend `de9446b` / backend `6c361acd`, including matching bundle. Clean trees; browser acceptance pending because CUA is unavailable. |
+
+## Recent-episode listening plan — 2026-10-11
+
+Plan 004 adds a listening aid for choosing usual intro/outro cuts. Its recent
+comparison list is independent of the number/order prepared for the Tonie.
+It reuses existing preview metadata and public media URLs with one native
+browser player; no backend media endpoint, migration, or new service is planned.
+Cut capture changes only the existing editor draft until Save. Browser codec
+and seeking limitations must remain visible, and actual browser playback is an
+acceptance gate. Execution is now reviewed; see the
+[execution review](004-execution-review.md). The isolated implementation passes
+83 focused podcast tests, 202 complete frontend tests, type checking, formatting,
+translations, production build and diff hygiene. Frontend commit is `b071f724`;
+backend documentation is `06a08c9d`, both on `feature/recent-episode-cut-preview`
+under `execution-worktrees/plan-004/backend`. The actual browser-control entry
+point fails with `CUA_REPL_ENABLED_SURFACES is required`; real RSS/ARD playback
+and audible boundary acceptance remain pending. Original application trees are
+clean at review completion. At the user's subsequent request, the reviewed source
+was integrated and pushed to both `feature/prepared-podcast-tonies` branches:
+frontend `de9446b`, backend `6c361acd`. All 338 bundle files match the reviewed
+build, excluding version metadata; Git-version validation passes. Both trees are
+clean and match their tracking refs. No general repository audit was done.
+
+## Four-source review fixes — 2026-10-11
+
+Plan 003 is complete for its software scope; see the
+[execution review](003-execution-review.md). Independent checks passed 177 frontend
+tests and all type/format/translation/build gates, 22 podcast API tests, 10 profile
+tests in enabled and disabled-testing builds, the disabled API contract, C9,
+custom JSON5 and box simulator15. One existing pause-fixture test is intentionally
+skipped only in production binaries; both fixture-enabled builds run all ten.
+The final backend immutable test image is `3041bc116d89`; the final Docker frontend
+stage is `b961fa622d28`. All 338 bundled files match the reviewed build, excluding
+version metadata. Both feature branches contain the fixes locally, with a separate
+bundle/gitlink commit `242dadad` and metadata-only remote reconciliation at final
+backend `2d0cc0f1`; frontend is `e94f205`. Both follow-ups were later included in
+the user-authorized plan 004 feature-branch push on 2026-10-12; the preview remains
+stopped. Plans 001/002 retain their
+outstanding browser/device acceptance gates. Reconcile 004 against these heads
+before implementation.
 
 ## Four-source follow-up — 2026-10-09
 
